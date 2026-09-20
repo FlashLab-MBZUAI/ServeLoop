@@ -905,6 +905,20 @@ class RouterProvider(Protocol):
     ) -> None: ...
 
 
+class PrefixRouterProvider(RouterProvider, Protocol):
+    """A router whose prefix keys also identify all causal expert decisions.
+
+    Equal keys must imply equal model, token prefix and routing for that
+    prefix, across all layers. Request-indexed routers cannot use token-only
+    keys. A deterministic causal token router may namespace content hashes by
+    its algorithm and parameters; recorded routes must also hash decisions.
+    """
+
+    def prefix_block_keys(
+        self, *, request: RequestSpec, model: ModelSpec, block_tokens: int,
+    ) -> tuple[str, ...]: ...
+
+
 @dataclass(frozen=True)
 class RouterTrace:
     provenance: TraceProvenance

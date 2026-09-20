@@ -147,3 +147,20 @@ phase-specific hardware errors, or a new model/context. Freeze new configuration
 for any rerun; simulated time, traffic and placement may change, and old fits,
 calibration coefficients and reported errors must not automatically carry over.
 Do not rewrite historical experiment JSON, configs, manifests or results.
+
+
+## MoE prefix routing identity
+
+Python integrations may enable MoE prefix caching by passing the same router to
+`HBServeCompiler` and `HBServePlacement`. The router must implement
+`PrefixRouterProvider.prefix_block_keys(request=..., model=..., block_tokens=...)`.
+Return one key for each complete prompt block. Equal keys must imply the same
+model, causal token prefix and expert decisions for all layers through that
+block. Include the parent chain, model, cache salt and block geometry.
+
+A router determined solely by causal token identity may namespace content keys
+with its algorithm and parameters. A recorded or request-indexed router must
+also include the relevant expert decisions; identical tokens alone are
+insufficient. Providers without this contract still cannot enable MoE prefix
+caching. Placement checks that each compiled batch uses the same router digest
+and records `prefix_router_sha256` in its receipt.

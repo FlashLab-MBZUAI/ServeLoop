@@ -32,6 +32,7 @@ from hbserve.contracts import (
     MemoryObject,
     ModelSpec,
     RequestSpec,
+    RouterProvider,
     HBServeError,
     canonical_sha256,
 )
@@ -523,11 +524,14 @@ class HBServePlacement:
         spec: PlacementSpec,
         hbf_geometry: HbfGeometry | None = None,
         hbm_stripe_bytes: int | None = None,
+        router: RouterProvider | None = None,
     ) -> None:
         if not models:
             raise HBServeError("serving placement requires models")
-        if spec.prefix_cache_bytes and any(layer.is_moe for model in models.values() for layer in model.layers):
-            raise HBServeError("MoE prefix reuse requires per-prefix routing identity; token-only prefix caching supports dense models only")
+        self._moe_models = {model.model_id for model in models.values() if any(layer.is_moe for layer in model.layers)}
+        if spec.prefix_cache_bytes and self._moe_models and not callable(getattr(router, 'prefix_block_keys', None)):
+            raise HBServeError("MoE prefix reuse requires a router providing per-prefix routing identity")
+        self.router = router
         self.models = dict(models)
         self.spec = spec
         self.hbf_geometry = hbf_geometry
@@ -868,7 +872,13 @@ class HBServePlacement:
             request=request, model=model, order=self._next_order
         )
         if self.spec.prefix_cache_bytes and request.token_ids is not None:
-            state.prefix_keys = block_keys(request, self._model_digests[model.model_id], self.spec.kv_block_tokens)
+            if model.model_id in self._moe_models:
+                state.prefix_keys = self.router.prefix_block_keys(
+                    request=request, model=model, block_tokens=self.spec.kv_block_tokens)
+                if len(state.prefix_keys) != request.prompt_tokens // self.spec.kv_block_tokens:
+                    raise HBServeError('router must identify every complete prompt block')
+            else:
+                state.prefix_keys = block_keys(request, self._model_digests[model.model_id], self.spec.kv_block_tokens)
             entries = self._prefix.lookup(state.prefix_keys, (request.prompt_tokens - 1) // self.spec.kv_block_tokens,
                                           self.spec.kv_block_tokens, now_ns)
             if entries:
@@ -1205,6 +1215,9 @@ class HBServePlacement:
         session_frontier_ns: float,
     ) -> TransactionBatch:
         batch_id = batch.schedule.batch_id
+        if (self.spec.prefix_cache_bytes and batch.schedule.model_id in self._moe_models
+                and batch.router_trace_sha256 != self.router.digest):
+            raise HBServeError('MoE batch router differs from the prefix-cache router')
         if batch_id in self._seen_batches:
             raise HBServeError("placement saw a duplicate batch ID")
         if (
@@ -1687,6 +1700,7 @@ class HBServePlacement:
             ],
             "cumulative": self._cumulative(),
             "final_state": state,
+            "prefix_router_sha256": None if self.router is None else self.router.digest,
             "prefix_cache": self._prefix.receipt(),
             "final_invariants": {
                 "all_request_kv_released": not self._kv,

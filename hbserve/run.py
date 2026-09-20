@@ -390,6 +390,7 @@ def run_experiment(
         spec=placement_spec,
         hbf_geometry=system.hbf_geometry,
         hbm_stripe_bytes=hbm_stripe_bytes(system),
+        router=router,
     )
     executor = HbfSimExecutor(
         simulator_path=simulator,

@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from test_hbserve import _dense, _moe, _engine, _pool_spec, _spec, _trace, PlacementExecutor
-from hbserve.contracts import HBServeError, RequestSpec, SchedulerPolicy
+from hbserve.contracts import (HBServeError, RequestSpec, SchedulerPolicy, RouterTrace,
+                              RouterDecision, TraceProvenance, canonical_sha256)
 from hbserve.placement import HBServePlacement
 from hbserve.prefix import block_keys
 
@@ -23,6 +24,38 @@ class PrefixTests(unittest.TestCase):
         models = {model.model_id: model}
         with self.assertRaisesRegex(HBServeError, "routing identity"):
             HBServePlacement(models=models, spec=replace(_spec(models), prefix_cache_bytes=65536))
+
+    def test_moe_prefix_reuse_is_bound_to_routes_and_compiler_identity(self):
+        class RecordedPrefixRouter(RouterTrace):
+            def prefix_block_keys(self, *, request, model, block_tokens):
+                parent, keys = model.digest, []
+                for ordinal, tokens in enumerate(block_keys(request, model.digest, block_tokens)):
+                    routes = [self.experts_for(request=request, token_index=token, layer=layer, model=model)
+                              for token in range(ordinal * block_tokens, (ordinal + 1) * block_tokens)
+                              for layer in range(model.num_layers)]
+                    parent = canonical_sha256(dict(parent=parent, tokens=tokens, routes=routes))
+                    keys.append(parent)
+                return tuple(keys)
+
+        model = _moe()
+        models = {model.model_id: model}
+        requests = tuple(RequestSpec(name, i * 1000, model.model_id, 33, 2, (1,) * 34)
+                         for i, name in enumerate(('a', 'b', 'c')))
+        router = RecordedPrefixRouter(TraceProvenance(kind='ci_fixture', source='recorded routes'),
+            tuple(RouterDecision(request.request_id, token, 0, (0, 2) if request.request_id == 'c' else (0, 1))
+                  for request in requests for token in range(34)))
+        spec = replace(_pool_spec(model, 40), prefix_cache_bytes=65536)
+        placement = HBServePlacement(models=models, spec=spec, router=router)
+        executor = PlacementExecutor(placement, latency_ns=10)
+        policy = SchedulerPolicy(max_batch_requests=1, max_batch_tokens=16, prefill_chunk_tokens=16)
+        result = _engine(models, _trace(*requests), executor, policy, router=router).run()
+        self.assertEqual([r['prefix_hit_tokens'] for r in result['requests']], [0, 32, 0])
+        self.assertEqual(placement.receipt()['prefix_router_sha256'], router.digest)
+        changed = replace(router, provenance=TraceProvenance(kind='ci_fixture', source='different binding'))
+        placement = HBServePlacement(models=models, spec=spec, router=router)
+        with self.assertRaisesRegex(HBServeError, 'differs from the prefix-cache router'):
+            _engine(models, _trace(*requests), PlacementExecutor(placement, latency_ns=10), policy, router=changed).run()
+
     def simulate(self, requests, *, pool_blocks=40, cache_bytes=65536, ttl_ns=None, batch_tokens=16):
         model = _dense()
         spec = replace(_pool_spec(model, pool_blocks), prefix_cache_bytes=cache_bytes,
