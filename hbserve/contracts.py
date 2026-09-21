@@ -78,20 +78,10 @@ class HBServeError(ValueError):
 
 
 def canonical_sha256(value: Any) -> str:
-    encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"), allow_nan=False)
-    digest = hashlib.sha256()
-    chunks: list[str] = []
-    size = 0
-    for chunk in encoder.iterencode(value):
-        chunks.append(chunk)
-        size += len(chunk)
-        if size >= 65536:
-            digest.update("".join(chunks).encode("utf-8"))
-            chunks.clear()
-            size = 0
-    if chunks:
-        digest.update("".join(chunks).encode("utf-8"))
-    return digest.hexdigest()
+    # Use the C encoder on the same canonical bytes. The temporary buffer is
+    # bounded by one document/batch and avoids a Python call per JSON fragment.
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _integer(value: Any, description: str, *, minimum: int = 0) -> int:
