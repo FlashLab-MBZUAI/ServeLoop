@@ -331,14 +331,14 @@ def _validate_latency_matrix(
 def _transaction_completion_digest(
     completions: Sequence[Mapping[str, Any]],
 ) -> str:
-    material = bytearray(
+    digest = hashlib.sha256(
         b"hbfsim.simulation_transaction_completions.v1\n"
         + f"count={len(completions)}\n".encode("ascii")
     )
     for index, completion in enumerate(completions):
         identifier = str(completion["id"])
-        material.extend(f"index={index}\n".encode("ascii"))
-        material.extend(
+        digest.update(f"index={index}\n".encode("ascii"))
+        digest.update(
             f"id={len(identifier)}:{identifier}\n".encode("ascii")
         )
         for field, label in (
@@ -349,14 +349,14 @@ def _transaction_completion_digest(
             bits = struct.unpack(
                 ">Q", struct.pack(">d", float(completion[field]))
             )[0]
-            material.extend(f"{label}={bits:016x}\n".encode("ascii"))
-        material.extend(
+            digest.update(f"{label}={bits:016x}\n".encode("ascii"))
+        digest.update(
             f"logical_bytes={completion['logical_bytes']}\n".encode("ascii")
         )
-        material.extend(
+        digest.update(
             f"physical_bytes={completion['physical_bytes']}\n".encode("ascii")
         )
-    return hashlib.sha256(material).hexdigest()
+    return digest.hexdigest()
 
 
 def _validate_transaction_completions(
@@ -2190,6 +2190,46 @@ class SimulationSession:
             raise SimulationSessionError("logical invalidation physical traffic diverged")
         self._last_finish_ns = self._issued_work_frontier_ns = finish
         self._invalidation_receipts.append(deepcopy(receipt))
+        return deepcopy(receipt)
+
+    def hbf_zone_command(
+        self, command: str, command_id: str, *, stack: int = 0,
+        channel: int = 0, zone: int = 0, argument: int = 0,
+    ) -> dict[str, Any]:
+        """Issue an OCP host zone operation at a completed IO barrier.
+
+        Commands: POPULATE, INVALIDATE, RESET, REMAP, RECYCLE, READ, WRITE. For READ/WRITE,
+        ``zone`` is the packed channel-local byte address and ``argument``
+        is the byte length. REMAP's argument is the other local zone index.
+        RESET only releases invalid host allocation state. REMAP explicitly
+        swaps two invalid zones in the same channel; it never copies data.
+        RECYCLE explicitly selects the least-worn-invalid-zone host policy
+        before RESET. POPULATE installs ``argument`` full zones beginning at
+        ``zone`` before any timed I/O, without programs or P/E.
+        """
+        if self._closed or not self._enable_hbf:
+            raise SimulationSessionError("host zone commands require an active HBF session")
+        if command not in {"POPULATE", "INVALIDATE", "RESET", "REMAP", "RECYCLE", "READ", "WRITE"}:
+            raise SimulationSessionError("unknown host zone command")
+        try:
+            identifier = require_safe_identifier(command_id, "host zone command id")
+        except TransactionProtocolError as error:
+            raise SimulationSessionError(str(error)) from error
+        values = [_nonnegative_integer(value, name) for value, name in
+                  ((stack, "stack"), (channel, "channel"), (zone, "zone/address"), (argument, "argument/bytes"))]
+        assert self._process.stdin is not None
+        self._process.stdin.write(f"ZONE_{command} {identifier} " + " ".join(map(str, values)) + "\n")
+        self._process.stdin.flush()
+        receipt = self._read_response(f"host zone command {identifier}")
+        if (receipt.get("schema") != "hbfsim.hbf_zone_completion.v1" or
+                receipt.get("result") != "pass" or receipt.get("id") != identifier or
+                receipt.get("command") != f"ZONE_{command}"):
+            raise SimulationSessionError("invalid host zone completion")
+        finish = _finite_nonnegative(receipt.get("finish_ns"), "host zone finish")
+        if finish < self._issued_work_frontier_ns:
+            raise SimulationSessionError("host zone completion moved backwards")
+        self._last_finish_ns = finish
+        self._issued_work_frontier_ns = finish
         return deepcopy(receipt)
 
     def hbf_wear_snapshot(self, snapshot_id: str) -> dict[str, Any]:

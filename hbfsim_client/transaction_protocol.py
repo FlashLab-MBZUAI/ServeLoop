@@ -264,7 +264,7 @@ def hbf_dense_mapping_pages(
     )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Transaction:
     id: str
     target: str
