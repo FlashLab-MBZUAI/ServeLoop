@@ -196,12 +196,16 @@ class GPUProfile:
             compute_flops=w.get('timing_flops',w.get('kernel_flops',w['flops']))
             compute=sum(p['compute_ns_per_flop']*v for p,v in anchors)*compute_flops
             memory=sum(p['memory_ns_per_byte']*v for p,v in anchors)*w['bytes']
-            multiplier=memory/w['bytes']*d['reference_hbm_bytes_per_ns']
-            if multiplier<1.-1e-10:
+            ideal=w['bytes']/d['reference_hbm_bytes_per_ns']
+            if memory<ideal*(1.-1e-10):
                 raise HBServeError('profile memory service is faster than its reference physical bandwidth')
+            # The measured memory time beyond ideal reference bandwidth is the
+            # kernel's own access overhead (latency-bound issue, small scattered
+            # rows). Serving adds it once to the device time of the kernel's
+            # transactions; it never multiplies a slower device's latency.
             result[op]=dict(w,fixed_ns=fixed,compute_ns=compute,reference_memory_ns=memory,
                 predicted_ns=fixed+max(compute,memory),
-                memory_service_multiplier=max(1.,multiplier),
+                memory_overhead_ns=max(0.,memory-ideal),
                 split_identified=all(p['split_identified'] for p,v in anchors),
                 compute_ns_range=[sum(p['compute_parameter_range'][j]*v for p,v in anchors)*compute_flops for j in (0,1)])
         return result

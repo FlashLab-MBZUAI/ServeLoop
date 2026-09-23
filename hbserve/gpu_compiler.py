@@ -20,11 +20,10 @@ def compile_calibrated(compiler,batch):
     outputs=sum(s.emits_output for s,_ in rows)
     operations=[];audit={};prefix=f'serve/b{batch.batch_id}'
 
-    def emit(role,dependencies=(),duration=0.,object_id=None,offset=0,size=0,op=None,labels=None,span_start=None,span_scale=1.,walk=None):
+    def emit(role,dependencies=(),duration=0.,object_id=None,offset=0,size=0,op=None,labels=None,walk=None):
         identifier=f'{prefix}/op{len(operations)}'
         operation=SemanticOperation(id=identifier,op=op,object_id=object_id,offset=offset,bytes=size,
-            duration_ns=duration,dependencies=tuple(dict.fromkeys(dependencies)),role=role,
-            span_start=span_start,span_scale=span_scale,walk=walk)
+            duration_ns=duration,dependencies=tuple(dict.fromkeys(dependencies)),role=role,walk=walk)
         operations.append(operation)
         audit[identifier]=dict(role=role,**{'memory_projection':memory_projection,**(labels or {})})
         return identifier
@@ -98,8 +97,11 @@ def compile_calibrated(compiler,batch):
                 dict(kernel=name,layer=layer,traffic_semantics='calibrated_tensor_footprint'))
         # The fit is still defined on coverage bytes. Instruction repeats are
         # represented in the application plan, not charged a second time here.
-        memory_done=emit(location+'/memory',(*memory,start),span_start=start,span_scale=c['memory_service_multiplier'],
+        # Device service comes from the kernel's own transactions; the measured
+        # excess over ideal reference bandwidth follows them once.
+        memory_done=emit(location+'/memory',(*memory,start),c['memory_overhead_ns'],
             labels=dict(memory_projection=memory_projection,coefficient_basis='tensor_coverage_bytes',
+                        memory_overhead='measured excess over ideal reference bandwidth, added once',
                         instruction_repeat_multiplier_applied=False))
         previous=emit(location+'/complete',(compute,memory_done))
 

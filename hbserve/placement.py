@@ -1301,8 +1301,6 @@ class HBServePlacement:
             dependencies: Sequence[str],
             duration_ns: float = 0.0,
             stack: int | None = None,
-            span_start: str | None = None,
-            span_scale: float = 1.0,
         ) -> str:
             nonlocal counter
             identifier = f"mapped/b{batch_id}/p{counter}"
@@ -1318,8 +1316,6 @@ class HBServePlacement:
                     duration_ns=duration_ns,
                     dependencies=tuple(dict.fromkeys(dependencies)),
                     stack=stack,
-                    span_start=span_start,
-                    span_scale=span_scale,
                 )
             )
             return identifier
@@ -1552,8 +1548,6 @@ class HBServePlacement:
                     byte_count=0,
                     dependencies=dependencies,
                     duration_ns=operation.duration_ns,
-                    span_start=terminal[operation.span_start] if operation.span_start else None,
-                    span_scale=operation.span_scale,
                 )
                 if operation.role.endswith(("/compute", "/routing_ready")) and operation.duration_ns > 0:
                     compute_windows.append({
