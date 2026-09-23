@@ -688,6 +688,87 @@ class ContractAndCompilerTests(unittest.TestCase):
 
 
 class PlacementTests(unittest.TestCase):
+    def test_projection_observer_is_read_only_and_preserves_the_mapped_payload(self) -> None:
+        from types import MappingProxyType
+        from unittest.mock import patch
+        from hbfsim_client.transaction_protocol import TransactionBatch
+
+        model = _dense()
+        model = replace(model, layers=(
+            replace(model.layers[0], attention_weight_bytes=208), *model.layers[1:]
+        ))
+        request = RequestSpec("r0", 0.0, model.model_id, 40, 2)
+        slices = (_slice("r0", 0, 40, phase="prefill", emits=True),)
+        batch = HBServeCompiler(
+            models={model.model_id: model}, request_trace=_trace(request)
+        ).compile(ScheduledBatch(0, model.model_id, slices, 0.0))
+        spec = replace(_spec({model.model_id: model}), hbm_alignment_bytes=16)
+
+        def placement() -> HBServePlacement:
+            result = HBServePlacement(
+                models={model.model_id: model}, spec=spec, hbm_stripe_bytes=64
+            )
+            result.admit_request(request)
+            result.reserve(0, slices)
+            return result
+
+        plain = placement().map_batch(batch, session_frontier_ns=0.0)
+        constructed, observed = [], []
+
+        def construct(*args, **kwargs):
+            result = TransactionBatch(*args, **kwargs)
+            constructed.append(result)
+            return result
+
+        def observer(terminals, fragments):
+            self.assertEqual(len(constructed), 1)
+            self.assertIsInstance(terminals, MappingProxyType)
+            self.assertIsInstance(fragments, MappingProxyType)
+            with self.assertRaises(TypeError):
+                terminals[batch.operations[0].id] = "changed"
+            with self.assertRaises(TypeError):
+                fragments[batch.memory_operations[0].id] = ("changed",)
+            observed.append((terminals, fragments))
+
+        with patch("hbserve.placement.TransactionBatch", side_effect=construct):
+            mapped = placement().map_batch(
+                batch, session_frontier_ns=0.0, projection_observer=observer
+            )
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(mapped, plain)
+        self.assertEqual(mapped.begin_line(), plain.begin_line())
+        self.assertEqual(list(mapped.protocol_payload_chunks()),
+                         list(plain.protocol_payload_chunks()))
+        terminals, fragments = observed[0]
+        self.assertEqual(set(terminals), {op.id for op in batch.operations})
+        self.assertEqual(set(fragments), {op.id for op in batch.memory_operations})
+        by_id = {tx.id: tx for tx in mapped.transactions}
+        self.assertTrue(any(len(ids) > 1 for ids in fragments.values()))
+        for operation in batch.operations:
+            terminal = by_id[terminals[operation.id]]
+            if operation.is_barrier:
+                self.assertEqual(terminal.target, "BARRIER")
+                self.assertEqual(terminal.duration_ns, operation.duration_ns)
+                self.assertTrue({terminals[key] for key in operation.dependencies}
+                                <= set(terminal.dependencies))
+                continue
+            ids = fragments[operation.id]
+            self.assertIsInstance(ids, tuple)
+            self.assertEqual(sum(by_id[key].bytes for key in ids), operation.bytes)
+            self.assertTrue(all(by_id[key].op == operation.op for key in ids))
+            self.assertTrue(all({terminals[key] for key in operation.dependencies}
+                                <= set(by_id[name].dependencies) for name in ids))
+            if len(ids) == 1:
+                self.assertEqual(terminals[operation.id], ids[0])
+            else:
+                self.assertEqual(terminal.target, "BARRIER")
+                self.assertEqual(terminal.dependencies, ids)
+        with patch("hbserve.placement.TransactionBatch", side_effect=ValueError("construction failed")):
+            with self.assertRaisesRegex(ValueError, "construction failed"):
+                placement().map_batch(batch, session_frontier_ns=0.0,
+                                      projection_observer=observer)
+        self.assertEqual(len(observed), 1)
+
     simulator: Path | None = None
 
     def test_block_table_grows_incrementally_per_iteration(self) -> None:
@@ -818,7 +899,7 @@ class PlacementTests(unittest.TestCase):
         ]
         self.assertTrue(recompute)
 
-    def test_hot_cold_migration_conserves_bytes(self) -> None:
+    def test_hbf_cold_kv_reads_directly_without_swap_in(self) -> None:
         model = _dense()
         spec = _pool_spec(
             model,
@@ -847,12 +928,12 @@ class PlacementTests(unittest.TestCase):
         self.assertEqual({row["mode"] for row in preemptions}, {"swap_out"})
         migration = result["scheduler"]["kv_migration_bytes"]
         self.assertGreater(migration["swap_out"], 0)
-        self.assertEqual(migration["swap_out"], migration["swap_in"])
+        self.assertEqual(migration["swap_in"], 0)
         cumulative = placement.receipt()["cumulative"]
-        self.assertEqual(cumulative["kv_swap_out_bytes"], cumulative["kv_swap_in_bytes"])
+        self.assertEqual(cumulative["kv_swap_in_bytes"], 0)
         self.assertTrue(all(placement.receipt()["final_invariants"].values()))
-        # Swap-outs are HBM reads -> D2D link writes -> HBF logical writes and
-        # swap-ins the reverse; link bytes decompose exactly by stack.
+        # Swap-outs preserve data through real HBM-to-HBF copies. Subsequent
+        # execution reads HBF directly, including when new blocks are needed.
         links = [
             transaction
             for mapped in executor.mapped
@@ -875,7 +956,7 @@ class PlacementTests(unittest.TestCase):
             for transaction in mapped.transactions
             if transaction.target == "HBF_LOGICAL" and transaction.op == "W"
         )
-        self.assertEqual(hbf_writes, migration["swap_out"])
+        self.assertGreater(hbf_writes, migration["swap_out"])
         rows = {row["request_id"]: row for row in result["requests"]}
         self.assertEqual(rows["r0"]["first_token_ns"], 10.0)
 

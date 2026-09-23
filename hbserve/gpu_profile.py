@@ -17,13 +17,32 @@ from hbserve.contracts import BatchTiming, HBServeError, canonical_sha256
 
 SCHEMA = 'hbserve.gpu_operator_profile.v3'
 
+# Historical profiles without hardware metadata describe this one measured
+# A100 backend. Keep their coefficients and byte/address predictions unchanged;
+# a new GPU must provide its own device geometry and address-evidence scope.
+A100_HARDWARE = dict(sm_count=108, attention_resident_ctas=2,
+    address_model='a100_fa2_marlin_application_v1')
+
+
+def hardware_parameters(hardware=None):
+    result = dict(A100_HARDWARE if hardware is None else hardware)
+    for name in ('sm_count', 'attention_resident_ctas'):
+        value = result.get(name)
+        if type(value) is not int or value < 1:
+            raise HBServeError(f'GPU hardware {name} must be a positive integer')
+    result.setdefault('address_model', 'tensor_footprint_unvalidated')
+    from hbserve.gpu_addresses import projection_identity
+    projection_identity(result)
+    return result
+
 
 def attention_imbalance(queries, contexts, heads, *, sm_count=108, resident_ctas=2):
     """Critical CTA wave relative to equal-length work on the same grid.
 
     FA2 head-128 general paged attention uses query tiles of 64 and key
-    tiles of 128. A100's 80 KiB shared memory / 128-thread CTA permits two
-    resident CTAs. This affects compute service, not physical KV bytes.
+    tiles of 128. Defaults preserve the measured A100 model's two resident
+    CTAs; other GPUs supply their observed SM count and explicit occupancy
+    assumption. This affects compute service, not physical KV bytes.
     """
     if max(queries)==1: return 1.
     tasks=[math.ceil((c+min(start+64,q))/128)
@@ -56,8 +75,9 @@ def packed_layout(g, catalog):
         embedding_bytes=2*g['vocab']*h,head_bytes=matrix_bytes(g['vocab'],h))
 
 
-def operator_work(g, queries, contexts, catalog, *, expert_counts=None, output_requests=None):
-    """Preserve every request's query and context, including causal prefill."""
+def operator_work(g, queries, contexts, catalog, *, expert_counts=None, output_requests=None, hardware=None):
+    """Preserve request shapes; omitted hardware means the measured A100 backend."""
+    hardware = hardware_parameters(hardware)
     if len(queries)!=len(contexts) or not queries or min(queries)<1 or min(contexts)<0:
         raise HBServeError('invalid packed request shape')
     m,b=sum(queries),len(queries)
@@ -89,7 +109,8 @@ def operator_work(g, queries, contexts, catalog, *, expert_counts=None, output_r
     tile_context=sum(64*math.ceil((c+min(start+64,q))/128)*128
                      for c,q in zip(contexts,queries) for start in range(0,q,64))
     kernel_flops=4*heads*d*tile_context
-    imbalance=attention_imbalance(queries,contexts,heads)
+    imbalance=attention_imbalance(queries,contexts,heads,sm_count=hardware['sm_count'],
+        resident_ctas=hardware['attention_resident_ctas'])
     result['attention'].update(kernel_flops=kernel_flops,
         timing_flops=kernel_flops*imbalance,cta_imbalance=imbalance,
         kernel_mode='decode_gqa_split' if decode else 'general_paged',query_tile=64)
@@ -138,6 +159,10 @@ class GPUProfile:
     def __init__(self,document):
         if document.get('schema')!=SCHEMA or document.get('pure_compute_measured') is not False:
             raise HBServeError('expected a decomposed paged GPU calibration profile')
+        hardware = document.get('hardware')
+        if hardware is None and document.get('environment',{}).get('gpu') != 'NVIDIA A100-SXM4-40GB':
+            raise HBServeError('GPU profiles outside the archived A100 backend require hardware metadata')
+        self.hardware=hardware_parameters(hardware)
         self.document=document
         self.digest=canonical_sha256(document)
 
@@ -153,7 +178,8 @@ class GPUProfile:
         if any(c+q>domain['short_context_max_sequence'] and q>domain['long_context_max_query']
                for c,q in zip(contexts,queries)):
             raise HBServeError('long prompt prefill is outside the measured backend domain')
-        work=operator_work(g,queries,contexts,d['catalog'][model],expert_counts=expert_counts,output_requests=output_requests)
+        work=operator_work(g,queries,contexts,d['catalog'][model],expert_counts=expert_counts,output_requests=output_requests,
+            hardware=self.hardware)
         result={}
         for op,w in work.items():
             table=d['parameters'][model][op]
@@ -207,10 +233,34 @@ class GPUCalibratedTimingProvider:
         self.model_bindings=dict(model_bindings)
         self.path=str(Path(profile).resolve()) if not isinstance(profile,GPUProfile) else None
 
+    def prefill_token_limit(self, *, context_tokens_before, requested_tokens):
+        """Largest supported query at this request's current token frontier.
+
+        The long-context restriction applies to each query's resulting
+        sequence length, not to the longest eventual request in a window.
+        """
+        domain = self.profile.document['domain']
+        count = min(requested_tokens, domain['max_query'],
+                    domain['max_sequence'] - context_tokens_before)
+        if count < 1:
+            raise HBServeError('request frontier outside GPU profile; requests are never clipped')
+        if context_tokens_before + count > domain['short_context_max_sequence']:
+            count = min(count, max(domain['long_context_max_query'],
+                                   domain['short_context_max_sequence'] - context_tokens_before))
+        return count
+
     def canonical(self):
+        from hbserve import gpu_addresses
+        address_model,memory_projection=gpu_addresses.projection_identity(self.profile.hardware)
         return dict(type=self.timing_model,profile=self.path,profile_sha256=self.profile.digest,
+            prefill_scheduling='per_slice_calibration_domain',
             model_bindings=self.model_bindings,scope='measured operator backend; serving validation is reported separately',
-            operator_validation=self.profile.document.get('operator_validation'))
+            operator_validation=self.profile.document.get('operator_validation'),
+            hardware=self.profile.hardware,address_model=address_model,
+            address_model_sha256=hashlib.sha256(Path(gpu_addresses.__file__).read_bytes()).hexdigest(),
+            memory_projection=memory_projection,
+            hardware_cache_filtering_validated=False,
+            memory_coefficient_basis='tensor_coverage_bytes; application repeats are not an extra DRAM multiplier')
 
     def timing_for(self,*,model,batch):
         # The compiler consumes decomposed operators. A layer-duration barrier

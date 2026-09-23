@@ -219,6 +219,10 @@ class HBServeEngine:
             )
         remaining = state.prefill_target - state.processed
         count = min(remaining, self.policy.prefill_chunk_tokens, budget_tokens)
+        query_limit = getattr(self.compiler.timing, 'prefill_token_limit', None)
+        if query_limit is not None:
+            count = query_limit(context_tokens_before=state.processed,
+                                requested_tokens=count)
         end = state.processed + count
         return BatchSlice(
             request_id=request.request_id,

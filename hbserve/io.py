@@ -275,6 +275,7 @@ PLACEMENT_FIELDS = {
     "initial_cached_models",
     "hbm_alignment_bytes",
     "hbf_page_size_bytes",
+    "hbf_weight_alignment_bytes",
     "external_page_size_bytes",
     "kv_block_tokens",
     "kv_placement",
@@ -284,7 +285,7 @@ PLACEMENT_FIELDS = {
 
 
 def placement_from_dict(value: Mapping[str, Any]) -> PlacementSpec:
-    value = {"prefix_cache_bytes": 0, "prefix_cache_ttl_ns": None, **value}
+    value = {"prefix_cache_bytes": 0, "prefix_cache_ttl_ns": None, "hbf_weight_alignment_bytes": 4096, **value}
     _exact(value, PLACEMENT_FIELDS, "serving placement")
     if value["schema"] != PLACEMENT_SCHEMA:
         raise HBServeError(
@@ -303,6 +304,7 @@ def placement_from_dict(value: Mapping[str, Any]) -> PlacementSpec:
         cold = _string(cold, "kv_placement.cold")
     return PlacementSpec(
         prefix_cache_bytes=_integer(value["prefix_cache_bytes"], "prefix cache bytes"),
+        hbf_weight_alignment_bytes=_integer(value["hbf_weight_alignment_bytes"], "HBF weight alignment", minimum=1),
         prefix_cache_ttl_ns=value["prefix_cache_ttl_ns"],
         hbm_capacity_bytes=_integer(
             value["hbm_capacity_bytes"], "HBM capacity", minimum=1

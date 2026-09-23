@@ -1,5 +1,11 @@
 # Native SGLang frontend
 
+This is an explicitly selected research frontend. The default interface is
+`hbserve run`, which uses HBServe's own scheduler and workload compiler and
+does not launch SGLang. Keep this frontend for studies of native SGLang
+scheduling and allocator behavior; see the [default workflow](../README.md#quick-start)
+for ordinary workload execution.
+
 `python -m hbserve.sglang run` executes timestamped token requests with the
 native SGLang scheduler, RadixCache, admission, retraction and KV allocator.
 Only forward timing is supplied by the persistent production HBFSim engine.

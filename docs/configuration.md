@@ -4,6 +4,14 @@ The checked-in system configurations are exploratory simulator profiles, not
 vendor performance guarantees. They are included so users can exercise
 placement and protocol behavior with a compatible HBFSim build.
 
+The system profiles and bundled `hbfsim_client` were synchronized with HBFSim
+on 2026-09-17. They use its current OCP HBF v0.7.0 / HBM4 configuration and
+simulation-session contracts. Removed subarray,
+separate program-verification, arbitrary HBIO-bandwidth, page-run acceleration
+and read-buffer options are not accepted by the current engine. Use the current
+profiles with a current HBFSim binary; do not reuse those removed options as
+compatibility overlays. Original frozen runs retain their original profiles.
+
 `4hbm-4hbf.cfg` and its `-miniquick` variant combine a four-stack HBM domain
 with four HBF stacks. Link rates, queue depths, controller timing, flash-media
 timing, overprovisioning, and thermal parameters are modeling assumptions. The

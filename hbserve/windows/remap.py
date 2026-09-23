@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Address-only remapping from canonical addresses to physical traffic.
+"""Remapping from canonical addresses to physical traffic.
 
-The fixed-slot paper paths deliberately ignore placement classes, routing
-labels, and workload semantics.  HBFSim receives only explicit memory-system
-targets, addresses, operations, byte counts, timing, and dependencies.
+Cache policies control weight fills and write allocation. HBF KV read misses
+always execute directly at HBF, irrespective of the cache admission policy.
+The native simulator receives only physical targets, addresses, operations,
+byte counts, timing, and dependencies; semantic placement stays in this adapter.
 """
 
 from __future__ import annotations
@@ -190,6 +191,7 @@ class DirectAttachedRemapper:
         hbf_stacks: int,
         placement_granularity_bytes: int,
         reserved_hbm_bytes: int = 0,
+        hbm_local_tail_bytes: int = 0,
         reserved_hbf_bytes: int = 0,
         hbm_priority_units: Sequence[int] | None = None,
     ) -> None:
@@ -211,9 +213,12 @@ class DirectAttachedRemapper:
             raise RemapError("direct HBM stacks have no physical capacity")
         if not self.hbm_stacks and self.hbm_capacity_bytes != 0:
             raise RemapError("direct HBM capacity is nonzero without HBM stacks")
-        self.reserved_hbm_payload_bytes = _integer(
-            reserved_hbm_bytes, "direct HBM reserved capacity"
-        )
+        self.hbm_local_tail_bytes = _integer(hbm_local_tail_bytes, "HBM local tail bytes")
+        if self.hbm_local_tail_bytes % self.page_size or self.hbm_local_tail_bytes >= self.address_space_bytes:
+            raise RemapError("HBM local tail must be page aligned and leave a nonempty pageable prefix")
+        self.pageable_address_space_bytes = self.address_space_bytes - self.hbm_local_tail_bytes
+        self.hbm_local_base = _align_up(_integer(reserved_hbm_bytes, "HBM reservation"), self.page_size)
+        self.reserved_hbm_payload_bytes = _integer(reserved_hbm_bytes, "HBM reservation") + self.hbm_local_tail_bytes
         self.reserved_hbf_payload_bytes = _integer(
             reserved_hbf_bytes, "direct HBF reserved capacity"
         )
@@ -250,7 +255,7 @@ class DirectAttachedRemapper:
             )
 
         self.total_units = (
-            self.address_space_bytes + self.granularity - 1
+            self.pageable_address_space_bytes + self.granularity - 1
         ) // self.granularity
         usable_hbm = (
             self.hbm_capacity_bytes - self.reserved_hbm_bytes
@@ -258,7 +263,7 @@ class DirectAttachedRemapper:
             else 0
         )
         if not self.hbf_stacks:
-            if self.address_space_bytes > usable_hbm:
+            if self.pageable_address_space_bytes > usable_hbm:
                 raise RemapError(
                     "all-HBM direct placement cannot contain the canonical "
                     "address space and reservation"
@@ -287,7 +292,7 @@ class DirectAttachedRemapper:
         # entries even though its mapping is simply the identity.
         final_unit = self.total_units - 1
         final_unit_bytes = (
-            self.address_space_bytes - final_unit * self.granularity
+            self.pageable_address_space_bytes - final_unit * self.granularity
         )
         final_target, _ = self._unit_target_and_rank(final_unit)
         final_slack = self.granularity - final_unit_bytes
@@ -302,7 +307,7 @@ class DirectAttachedRemapper:
         if (
             self.hbm_resident_payload_bytes
             + self.hbf_resident_payload_bytes
-            != self.address_space_bytes
+            != self.pageable_address_space_bytes
         ):
             raise RemapError("direct placement lost payload bytes")
         # Target-local ranks are dense, so the compact allocation extent equals
@@ -371,6 +376,10 @@ class DirectAttachedRemapper:
             raise RemapError(
                 "direct residency query exceeds the canonical address space"
             )
+        end = min(end, self.pageable_address_space_bytes)
+        if address >= end:
+            return 0
+        byte_count = end - address
         if self.hbm_units == self.total_units:
             return 0
         if self.hbf_units == self.total_units:
@@ -400,6 +409,10 @@ class DirectAttachedRemapper:
         end = address + byte_count
         if address < 0 or byte_count <= 0 or end > self.address_space_bytes:
             raise RemapError("direct access exceeds the canonical address space")
+        if end > self.pageable_address_space_bytes:
+            split = max(address, self.pageable_address_space_bytes)
+            prefix = self._physical_segments(address, split - address) if address < split else ()
+            return prefix + (("HBM", self.hbm_local_base + split - self.pageable_address_space_bytes, end - split),)
         if self.hbm_units == self.total_units:
             return (("HBM", self.reserved_hbm_bytes + address, byte_count),)
         if self.hbf_units == self.total_units:
@@ -546,6 +559,8 @@ class DirectAttachedRemapper:
                 "hbm_capacity_bytes": self.hbm_capacity_bytes,
                 "reserved_hbm_payload_bytes": self.reserved_hbm_payload_bytes,
                 "reserved_hbm_allocation_bytes": self.reserved_hbm_bytes,
+                "hbm_local_tail_bytes": self.hbm_local_tail_bytes,
+                "pageable_address_space_bytes": self.pageable_address_space_bytes,
                 "reserved_hbf_payload_bytes": self.reserved_hbf_payload_bytes,
                 "reserved_hbf_allocation_bytes": self.reserved_hbf_bytes,
                 "hbm_resident_payload_bytes": (
@@ -701,6 +716,7 @@ class HbmFrontedBackingRemapper:
         external_capacity_bytes: int | None = None,
         external_page_size_bytes: int | None = None,
         reserved_hbm_bytes: int = 0,
+        hbm_local_tail_bytes: int = 0,
         policy: str = "address_only_lru",
         kv_priority_ranges: tuple[tuple[int, int], ...] | None = None,
     ) -> None:
@@ -741,9 +757,12 @@ class HbmFrontedBackingRemapper:
         self.hbm_capacity_bytes = _integer(
             hbm_capacity_bytes, "HBM-fronted HBM capacity", minimum=1
         )
-        self.reserved_hbm_payload_bytes = _integer(
-            reserved_hbm_bytes, "HBM-fronted HBM reserved capacity"
-        )
+        self.hbm_local_tail_bytes = _integer(hbm_local_tail_bytes, "HBM local tail bytes")
+        if self.hbm_local_tail_bytes % self.page_size or self.hbm_local_tail_bytes >= self.address_space_bytes:
+            raise RemapError("HBM local tail must be page aligned and leave a nonempty pageable prefix")
+        self.pageable_address_space_bytes = self.address_space_bytes - self.hbm_local_tail_bytes
+        self.hbm_local_base = _align_up(_integer(reserved_hbm_bytes, "HBM reservation"), self.page_size)
+        self.reserved_hbm_payload_bytes = _integer(reserved_hbm_bytes, "HBM reservation") + self.hbm_local_tail_bytes
         self.reserved_hbm_bytes = _align_up(
             self.reserved_hbm_payload_bytes, self.page_size
         )
@@ -794,7 +813,7 @@ class HbmFrontedBackingRemapper:
             raise RemapError(
                 "HBM-fronted address space exceeds the HBF user namespace"
             )
-        if self.address_space_bytes > self.backing_capacity_bytes:
+        if self.pageable_address_space_bytes > self.backing_capacity_bytes:
             raise RemapError(
                 "canonical address space exceeds the backing capacity"
             )
@@ -819,7 +838,7 @@ class HbmFrontedBackingRemapper:
 
         if self.backing_kind == "hbf":
             assert self.geometry is not None
-            logical_pages = self.address_space_bytes // self.page_size
+            logical_pages = self.pageable_address_space_bytes // self.page_size
             mapping_pages = hbf_dense_mapping_pages(
                 0, logical_pages, self.geometry
             )
@@ -891,7 +910,7 @@ class HbmFrontedBackingRemapper:
         self._min_freq = 0
         self._accesses_since_decay = 0
         decay_units = (
-            (self.address_space_bytes + self.granularity - 1) // self.granularity
+            (self.pageable_address_space_bytes + self.granularity - 1) // self.granularity
             if self.policy == "decayed_lfu" else self.cache_slots
         )
         self._decay_every = max(4 * decay_units, 1024)
@@ -914,6 +933,7 @@ class HbmFrontedBackingRemapper:
         self._source_digests: list[str] = []
         self._finalized = False
         self._cumulative = {
+            "hbm_local_bytes": 0,
             "accessed_bytes": 0,
             "hit_bytes": 0,
             "miss_bytes": 0,
@@ -952,7 +972,7 @@ class HbmFrontedBackingRemapper:
     @property
     def initial_hbf_logical_pages(self) -> int:
         return (
-            self.address_space_bytes // self.page_size
+            self.pageable_address_space_bytes // self.page_size
             if self.backing_kind == "hbf"
             else 0
         )
@@ -1063,11 +1083,11 @@ class HbmFrontedBackingRemapper:
 
     def _unit_bytes(self, unit: int) -> int:
         begin = unit * self.granularity
-        if begin >= self.address_space_bytes:
+        if begin >= self.pageable_address_space_bytes:
             raise RemapError(
                 "HBM-fronted unit starts outside the canonical address space"
             )
-        return min(self.granularity, self.address_space_bytes - begin)
+        return min(self.granularity, self.pageable_address_space_bytes - begin)
 
     def _link_bytes_by_stack(self, address: int, byte_count: int) -> tuple[int, ...]:
         if self.geometry is None:
@@ -1085,6 +1105,8 @@ class HbmFrontedBackingRemapper:
             raise RemapError(
                 "canonical address space changed during HBM-fronted replay"
             )
+        kv_region = batch.layout.region(batch.layout.kv_region_id)
+        direct_readers: dict[int, list[str]] = {}
         before = dict(self._cumulative)
         resident_units_before = len(self._resident)
         dirty_units_before = sum(line.dirty for line in self._resident.values())
@@ -1363,8 +1385,23 @@ class HbmFrontedBackingRemapper:
             projected: list[str] = []
             completions: list[str] = []
             cursor = logical.addr
+            logical_dependencies = dependencies
             while cursor < logical_end:
+                dependencies = logical_dependencies
+                if cursor >= self.pageable_address_space_bytes:
+                    local_bytes = logical_end - cursor
+                    user = emit(target="HBM", op=logical.op,
+                                addr=self.hbm_local_base + cursor - self.pageable_address_space_bytes,
+                                byte_count=local_bytes, issue_ns=logical.issue_ns,
+                                dependencies=dependencies)
+                    self._cumulative["hbm_local_bytes"] += local_bytes
+                    projected.append(user)
+                    completions.append(user)
+                    cursor = logical_end
+                    continue
                 unit = cursor // self.granularity
+                if logical.op == "W":
+                    dependencies += tuple(direct_readers.pop(unit, ()))
                 unit_begin = unit * self.granularity
                 unit_bytes = self._unit_bytes(unit)
                 segment_end = min(logical_end, unit_begin + unit_bytes)
@@ -1406,6 +1443,22 @@ class HbmFrontedBackingRemapper:
                     continue
 
                 self._cumulative["miss_bytes"] += segment_bytes
+                if (self.backing_kind == "hbf" and logical.op == "R" and
+                        kv_region.begin <= cursor and segment_end <= kv_region.end):
+                    ready = list(dependencies)
+                    release = self._backing_release.get(unit)
+                    if release is not None:
+                        ready.append(release)
+                    user = emit(target="HBF_LOGICAL", op="R", addr=cursor,
+                                byte_count=segment_bytes, issue_ns=logical.issue_ns,
+                                dependencies=tuple(dict.fromkeys(ready)))
+                    projected.append(user)
+                    completions.append(user)
+                    direct_readers.setdefault(unit, []).append(user)
+                    self._cumulative["stream_bypass_reads"] += 1
+                    self._cumulative["stream_bypass_bytes"] += segment_bytes
+                    cursor = segment_end
+                    continue
                 if not self._admit(unit, logical.op, touch_count):
                     # Bypass the persistent cache, not the HBM/D2D path.
                     # Each staging slot remains occupied until GPU consumption;
@@ -1748,7 +1801,7 @@ class HbmFrontedBackingRemapper:
             policy={
                 "name": (
                     f"{self.policy}_credit_jit_chunked_read_ahead_"
-                    "page_dirty_writeback_v7"
+                    "page_dirty_writeback_direct_kv_v8"
                 ),
                 "decision_inputs": [
                     "addr",
@@ -1756,10 +1809,13 @@ class HbmFrontedBackingRemapper:
                     "bytes",
                     "issue_ns",
                     "dependencies",
+                    *(["configured_kv_range"] if self.backing_kind == "hbf" else []),
                 ],
                 "hbm_capacity_bytes": self.hbm_capacity_bytes,
                 "reserved_hbm_payload_bytes": self.reserved_hbm_payload_bytes,
                 "reserved_hbm_allocation_bytes": self.reserved_hbm_bytes,
+                "hbm_local_tail_bytes": self.hbm_local_tail_bytes,
+                "pageable_address_space_bytes": self.pageable_address_space_bytes,
                 "cache_slots": self.cache_slots,
                 "migration_granularity_bytes": self.granularity,
                 "transfer_chunk_bytes": self.transfer_chunk_bytes,
@@ -1767,11 +1823,12 @@ class HbmFrontedBackingRemapper:
                 "read_ahead_window_chunks": self.read_ahead_window_chunks,
                 "cache_usable_bytes": self.cache_slots * self.granularity,
                 "stream_staging_bytes": self.stream_staging_bytes,
-                "nonallocating_read_path": "backing_read_transfer_hbm_staging_gpu_read",
+                "nonallocating_read_path": "HBF_KV_direct; other_backing_reads_via_HBM_staging" if self.backing_kind == "hbf" else "backing_read_transfer_hbm_staging_gpu_read",
                 "stream_slot_release": "gpu_read_completion",
                 "initial_cache_state": "empty_at_session_start",
                 "cache_state_persists_across_batches": True,
-                "gpu_visible_tier": "HBM_only",
+                "gpu_visible_tier": "HBM_and_HBF" if self.backing_kind == "hbf" else "HBM_only",
+                "hbf_kv_read_policy": "direct_gpu_read_on_miss" if self.backing_kind == "hbf" else None,
                 "backing_kind": self.backing_kind,
                 "backing_target": self.backing_target,
                 "backing_capacity_bytes": self.backing_capacity_bytes,
@@ -1837,7 +1894,7 @@ class HbmFrontedBackingRemapper:
                         else "preexisting_external_dataset"
                     ),
                     "address_base": 0,
-                    "bytes": self.address_space_bytes,
+                    "bytes": self.pageable_address_space_bytes,
                     "contents": "complete_canonical_address_space",
                     "installation_accounting": "setup_excluded_from_serving",
                     "content_values_modeled": False,
@@ -2074,7 +2131,7 @@ class HbmFrontedBackingRemapper:
                 "all_dirty_hbm_residents_flushed": not any(
                     line.dirty for line in self._resident.values()
                 ),
-                "gpu_visible_tier_remained_hbm_only": True,
+                "gpu_visibility_matches_backing_contract": True,
                 "semantic_fields_at_execution_boundary": False,
                 "routing_sidecar_consumed_by_policy": False,
                 "placement_classes_consumed_by_policy": False,

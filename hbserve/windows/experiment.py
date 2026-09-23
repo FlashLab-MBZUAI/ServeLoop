@@ -468,6 +468,12 @@ def new_remapper(
 ) -> DirectAttachedRemapper | HbmFrontedBackingRemapper | PeerKvMigrationRemapper:
     mapping = dict(_mapping(experiment.get("mapping"), "experiment mapping"))
     mapping.update(_mapping(topology.raw.get("mapping", {}), "topology mapping overrides"))
+    runtime_tail = 0
+    if "q1_request_schedule" in experiment:
+        runtime = context_layout.region(context_layout.metadata_region_id)
+        if runtime.end != context_layout.address_space_bytes or not topology.hbm_stacks:
+            _fail("Q1 runtime workspace must be the final aligned region and have physical HBM")
+        runtime_tail = runtime.bytes
     if topology.integration_mode == "peer_hbm_hbf":
         if _mapping(experiment.get("workload"), "workload").get("window_shape") != "prefill_growth":
             _fail("peer KV requires an empty-to-grown prefill window, not preinstalled decode KV")
@@ -478,7 +484,7 @@ def new_remapper(
             _fail("peer KV requires native resolved HBF logical capacity")
         return PeerKvMigrationRemapper(
             address_space_bytes=context_layout.address_space_bytes,
-            hbm_capacity_bytes=topology.system_config.hbm_capacity_bytes,
+            hbm_capacity_bytes=topology.system_config.hbm_application_capacity(enable_hbf=topology.hbf_stacks > 0),
             migration_granularity_bytes=_integer(peer.get("migration_granularity_bytes"), "peer KV granularity", minimum=4096),
             transfer_chunk_bytes=_integer(peer.get("transfer_chunk_bytes"), "peer transfer chunk", minimum=4096),
             hbf_geometry=topology.system_config.hbf_geometry,
@@ -493,10 +499,13 @@ def new_remapper(
             context_layout, mapping.get("direct_placement", {}), granularity, trace_sha256,
             logical_trace_sha256=logical_trace_sha256,
         )
+        if runtime_tail and order is not None:
+            pageable_units = (context_layout.address_space_bytes - runtime_tail + granularity - 1) // granularity
+            order = [unit for unit in order if unit < pageable_units]
         remapper = DirectAttachedRemapper(
             address_space_bytes=context_layout.address_space_bytes,
             hbm_capacity_bytes=(
-                topology.system_config.hbm_capacity_bytes
+                topology.system_config.hbm_application_capacity(enable_hbf=topology.hbf_stacks > 0)
                 if topology.hbm_stacks
                 else 0
             ),
@@ -505,6 +514,7 @@ def new_remapper(
             hbf_stacks=topology.hbf_stacks,
             placement_granularity_bytes=granularity,
             hbm_priority_units=order,
+            hbm_local_tail_bytes=runtime_tail,
         )
         if order is not None:
             remapper.policy_name = "static_" + str(mapping["direct_placement"]["policy"])
@@ -522,7 +532,7 @@ def new_remapper(
                    "external_page_size_bytes": int(identity["page_size_bytes"])}
     return HbmFrontedBackingRemapper(
         address_space_bytes=context_layout.address_space_bytes,
-        hbm_capacity_bytes=topology.system_config.hbm_capacity_bytes,
+        hbm_capacity_bytes=topology.system_config.hbm_application_capacity(enable_hbf=topology.hbf_stacks > 0),
         migration_granularity_bytes=_integer(
             cache_policy.get("migration_granularity_bytes"),
             "external migration granularity",
@@ -539,6 +549,7 @@ def new_remapper(
             minimum=4096,
         ),
         reserved_hbm_bytes=_integer(cache_policy.get("reserved_hbm_bytes", 0), "reserved HBM bytes"),
+        hbm_local_tail_bytes=runtime_tail,
         policy=policy,
         kv_priority_ranges=(tuple((region.begin, region.end) for region in context_layout.regions
                                   if region.placement_class == "kv") if policy == "class_aware" else None),
@@ -579,7 +590,8 @@ def _topology_preflight(
     elif isinstance(remapper, DirectAttachedRemapper):
         placement = {
             "kind": "direct_residency",
-            "hbm_payload_bytes": remapper.hbm_resident_payload_bytes,
+            "hbm_payload_bytes": remapper.hbm_resident_payload_bytes + remapper.hbm_local_tail_bytes,
+            "hbm_local_workspace_bytes": remapper.hbm_local_tail_bytes,
             "hbf_payload_bytes": remapper.hbf_resident_payload_bytes,
             "external_backing_bytes": 0,
         }
@@ -593,8 +605,9 @@ def _topology_preflight(
             "hbm_cache_capacity_bytes": remapper.cache_slots * remapper.granularity,
             "hbm_stream_staging_bytes": remapper.stream_staging_bytes,
             "reserved_hbm_bytes": remapper.reserved_hbm_bytes,
-            "hbf_payload_bytes": context.layout.address_space_bytes if remapper.backing_kind == "hbf" else 0,
-            "external_backing_bytes": context.layout.address_space_bytes if remapper.backing_kind == "external" else 0,
+            "hbm_local_workspace_bytes": remapper.hbm_local_tail_bytes,
+            "hbf_payload_bytes": remapper.pageable_address_space_bytes if remapper.backing_kind == "hbf" else 0,
+            "external_backing_bytes": remapper.pageable_address_space_bytes if remapper.backing_kind == "external" else 0,
             "policy": remapper.policy,
             "capacity_semantics": "inclusive_backing_plus_duplicate_HBM_cache_not_additive",
         }
@@ -618,7 +631,7 @@ def _topology_preflight(
             "external": external_capacity,
         },
         "effective_hbm_address_guard_bytes": (
-            topology.system_config.hbm_capacity_bytes
+            topology.system_config.hbm_application_capacity(enable_hbf=topology.hbf_stacks > 0)
             if topology.hbm_stacks
             else 0
         ),
@@ -658,7 +671,10 @@ def _topology_preflight(
                     topology.system_config.hbf_ctrl_dram_bytes
                     // topology.hbf_stacks
                 ),
-                "budget_basis": "resolved_device_configuration",
+                "budget_basis": "reserved_from_physical_hbm",
+                "physical_medium": "hbm",
+                "reserved_hbm_bytes": topology.system_config.hbf_buffer_hbm_bytes,
+                "timing_model": "hbm-reserved-shared-data-channels",
                 "fraction_of_raw_capacity": topology.system_config.hbf_ctrl_dram_bytes / topology.system_config.hbf_geometry.capacity_bytes,
                 "charges": [
                     "mapping_page_directory",

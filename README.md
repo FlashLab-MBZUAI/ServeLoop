@@ -6,15 +6,10 @@ batching iterations, paged-KV lifecycle events, and byte-exact memory
 transactions. A compatible HBFSim executable can then close the loop with
 physical memory completion times.
 
-The optional [native SGLang frontend](docs/sglang.md) preserves the production
-scheduler, RadixCache and token allocator and uses HBFSim as its forward-time
-backend. It supports HBM/HBF/external placement, a finite HBM KV cache,
-background writeback and allocator-driven KV invalidation. Run it with
-`python -m hbserve.sglang`; the optional runtime has separate dependencies.
-Its request input accepts token JSONL, canonical production-trace bundles, or
-pinned Bailian/Mooncake files with `--trace-source-id`.
-
-The same `hbserve run` command also accepts fixed memory-window experiments.
+The default entry point is `hbserve run` (or `python -m hbserve run`). It uses
+HBServe's own scheduler, workload compiler and placement to send transaction
+batches to HBFSim. It does not import or launch SGLang or PyTorch.
+The same command accepts fixed memory-window experiments with `--experiment`.
 Miniquick and full-scale use the same generator, model ledger, and remappers;
 their model, population, and system profiles differ, not their implementation.
 
@@ -36,6 +31,11 @@ formulas, and each result carries a machine-readable capability boundary.
 - Calibrated paged GPU operators, roofline, memory-only, or linear timing.
   `gpu_calibrated` preserves ragged requests, actual MoE expert counts and
   compute/memory overlap; its A100 validation scope travels with the profile.
+- A100 application-address templates for paged FA2 KV and supported small-M
+  Marlin QKV. The calibrated compiler uses their tile/slice traversal in
+  placement, with lazy per-warp expansion for trace comparison. See
+  [GPU address model](docs/gpu-address-model.md) for the measured scope and
+  the distinction between instruction reads and simulated memory traffic.
 - A persistent HBFSim session whose completion frontier schedules the next
   iteration.
 - Matched fixed-window topology comparisons: prefill growth, decode-only, and
@@ -104,6 +104,19 @@ Use `--allow-dirty` for exploratory runs from a modified or non-Git installation
 See [Fixed windows](docs/windows.md) for modes, profiles, and interpretation.
 See [Prefix caching](docs/prefix-caching.md) for identity, lifecycle, synthetic
 reuse inputs, and the volatile-cache boundary.
+
+## Optional native SGLang studies
+
+The separate [native SGLang frontend](docs/sglang.md) is retained for studies
+that need SGLang's scheduler, RadixCache and token allocator. Select it
+explicitly with `python -m hbserve.sglang`; it has separate dependencies and
+is never selected by `hbserve run`.
+Its input accepts token JSONL, canonical production-trace bundles, or pinned
+Bailian/Mooncake files with `--trace-source-id`.
+
+Both frontends use HBFSim's physical memory engine. Switching the frontend
+changes scheduling and allocation behavior; it does not replace detailed
+physical execution with a faster timing model.
 
 ## Recovery scope
 

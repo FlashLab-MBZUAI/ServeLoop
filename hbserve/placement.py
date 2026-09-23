@@ -2,7 +2,7 @@
 """Capacity-checked placement of HBServe objects onto HBFSim tiers.
 
 Weights are placed statically by tier (with per-object overrides) or cached
-whole-model in HBM.  KV is paged: every request owns one block table per
+whole-model in HBM, or cached from HBF as bounded object chunks.  KV is paged: every request owns one block table per
 layer, blocks are allocated incrementally as tokens are processed, and blocks
 of requests that are not running may migrate whole-request to a cold tier
 (HBF or external) and back on demand as explicit transactions.
@@ -16,9 +16,11 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from hbserve.prefix import PrefixCache, block_keys
 from hbserve.block_references import BlockReferences
+from hbserve.weight_cache import HbfWeightCache
 import heapq
 import math
-from typing import Any, Mapping, Sequence
+from types import MappingProxyType
+from typing import Any, Callable, Mapping, Sequence
 
 from hbfsim_client.transaction_protocol import (
     HbfGeometry,
@@ -51,6 +53,7 @@ WEIGHT_TIERS = {
     "hbf",
     "external_direct",
     "external_cached_hbm",
+    "hbf_cached_hbm",
 }
 KV_HOT_TIER = "hbm"
 KV_COLD_TIERS = {"hbf", "external"}
@@ -122,6 +125,7 @@ class PlacementSpec:
     kv_placement: KvPlacement = field(default_factory=KvPlacement)
     prefix_cache_bytes: int = 0
     prefix_cache_ttl_ns: float | None = None
+    hbf_weight_alignment_bytes: int = 4096
 
     def __post_init__(self) -> None:
         _positive_integer(self.hbm_capacity_bytes, "HBM capacity")
@@ -146,6 +150,7 @@ class PlacementSpec:
         for name, value in (
             ("HBM alignment", self.hbm_alignment_bytes),
             ("HBF page size", self.hbf_page_size_bytes),
+            ("HBF weight alignment", self.hbf_weight_alignment_bytes),
             ("external page size", self.external_page_size_bytes),
             ("model load chunk", self.model_load_chunk_bytes),
         ):
@@ -185,10 +190,12 @@ class PlacementSpec:
                 raise HBServeError(
                     f"unsupported weight tier for {model_id}: {tier!r}"
                 )
+        if {"hbf_cached_hbm", "external_cached_hbm"} <= set(self.model_weight_tiers.values()):
+            raise HBServeError("chunk and whole-model caches cannot share one HBM partition")
         for object_id, tier in self.object_tier_overrides.items():
             if not isinstance(object_id, str) or not object_id:
                 raise HBServeError("placement object ID is empty")
-            if tier not in WEIGHT_TIERS - {"external_cached_hbm"}:
+            if tier not in WEIGHT_TIERS - {"external_cached_hbm", "hbf_cached_hbm"}:
                 raise HBServeError(
                     "object overrides support hbm, hbf, or external_direct"
                 )
@@ -228,6 +235,7 @@ class PlacementSpec:
             "initial_cached_models": list(self.initial_cached_models),
             "hbm_alignment_bytes": self.hbm_alignment_bytes,
             "hbf_page_size_bytes": self.hbf_page_size_bytes,
+            "hbf_weight_alignment_bytes": self.hbf_weight_alignment_bytes,
             "external_page_size_bytes": self.external_page_size_bytes,
             "kv_block_tokens": self.kv_block_tokens,
             "kv_placement": self.kv_placement.canonical(),
@@ -575,9 +583,9 @@ class HBServePlacement:
         for object_id, memory_object in self.objects.items():
             model_tier = spec.model_weight_tiers[memory_object.model_id]
             override = spec.object_tier_overrides.get(object_id)
-            if model_tier == "external_cached_hbm" and override is not None:
+            if model_tier in {"external_cached_hbm", "hbf_cached_hbm"} and override is not None:
                 raise HBServeError(
-                    "cached whole-model placement cannot have object overrides"
+                    "cached weight placement cannot have object overrides"
                 )
             self._object_tier[object_id] = override or model_tier
 
@@ -604,9 +612,9 @@ class HBServePlacement:
                         memory_object.bytes,
                     )
                     hbm_cursor += memory_object.bytes
-                elif tier == "hbf":
+                elif tier in {"hbf", "hbf_cached_hbm"}:
                     hbf_cursor = _align_up(
-                        hbf_cursor, spec.hbf_page_size_bytes
+                        hbf_cursor, max(spec.hbf_page_size_bytes, spec.hbf_weight_alignment_bytes)
                     )
                     self._static[memory_object.id] = ObjectAddress(
                         memory_object.id,
@@ -719,6 +727,11 @@ class HBServePlacement:
         if self._cold is not None and self._cold.capacity_blocks == 0:
             raise HBServeError("cold KV tier has no block capacity")
 
+        self._weight_cache = (
+            HbfWeightCache(begin=self.hbm_cache_begin, capacity=spec.hbm_model_cache_bytes,
+                           chunk_bytes=spec.model_load_chunk_bytes, geometry=hbf_geometry)
+            if "hbf_cached_hbm" in spec.model_weight_tiers.values() else None
+        )
         self._cache: OrderedDict[str, _CachedModel] = OrderedDict()
         self._kv: dict[str, _RequestKv] = {}
         self._next_order = 0
@@ -823,7 +836,8 @@ class HBServePlacement:
                 }
                 for request_id, state in sorted(self._kv.items())
             ],
-            "cache_free_extents": self._cache_allocator.canonical(),
+            "cache_free_extents": self._cache_allocator.canonical() if self._weight_cache is None else [],
+            "weight_cache": None if self._weight_cache is None else self._weight_cache.receipt(),
             "kv_hot_free_blocks": self._hot.free_blocks,
             "prefix_cache": self._prefix.receipt(),
             "kv_cold_free_blocks": (
@@ -893,6 +907,8 @@ class HBServePlacement:
             return
         for item in batch.schedule.slices:
             state = self._state(item.request_id)
+            if state.tier != KV_HOT_TIER:
+                continue  # PrefixCache owns HBM block IDs, never HBF IDs.
             self._prefix.publish(state.prefix_keys, state.blocks,
                                  min(item.token_end, state.request.prompt_tokens) // self.spec.kv_block_tokens, finish_ns)
 
@@ -915,6 +931,7 @@ class HBServePlacement:
         if len(in_batch) != len(slices):
             raise HBServeError("KV plan received a repeated request")
         needed = 0
+        cold_growth = 0
         swap_in: list[str] = []
         for item in slices:
             state = self._state(item.request_id)
@@ -922,10 +939,15 @@ class HBServePlacement:
                 0,
                 self._blocks_per_layer_for(item.token_end) - state.blocks_per_layer,
             )
+            if state.tier == "hbf":
+                cold_growth += grow * state.model.num_layers
+                continue
             needed += grow * state.model.num_layers
             if state.tier != KV_HOT_TIER:
                 swap_in.append(item.request_id)
                 needed += state.total_blocks
+        if cold_growth and (self._cold is None or cold_growth > self._cold.free_blocks):
+            return None
         victims: list[str] = []
         deficit = needed - self._hot.free_blocks
         prefix_evictions = []
@@ -949,7 +971,7 @@ class HBServePlacement:
         if deficit > 0:
             if self._cold is None:
                 return None
-            cold_free = self._cold.free_blocks
+            cold_free = self._cold.free_blocks - cold_growth
             candidates = sorted(
                 (
                     state
@@ -1005,7 +1027,7 @@ class HBServePlacement:
         return moved
 
     def reserve(self, batch_id: int, slices: Sequence[BatchSlice]) -> dict[str, Any]:
-        """Evict cold-eligible waiting requests, swap in, and grow block tables."""
+        """Move waiting requests out; restore external KV; grow at the active home."""
 
         _nonnegative_integer(batch_id, "reserve batch id")
         if self._pending_batch_id is not None and self._pending_batch_id != batch_id:
@@ -1040,7 +1062,9 @@ class HBServePlacement:
                 if not state.blocks:
                     state.blocks = [[] for _ in range(state.model.num_layers)]
                 for layer_blocks in state.blocks:
-                    layer_blocks.extend(self._hot.allocate(grow))
+                    pool = self._cold if state.tier == "hbf" else self._hot
+                    assert pool is not None
+                    layer_blocks.extend(pool.allocate(grow))
                 allocated += grow * state.model.num_layers
             state.last_batch_id = batch_id
             if self.spec.prefix_cache_bytes and state.tier == KV_HOT_TIER:
@@ -1068,12 +1092,15 @@ class HBServePlacement:
         """Take a running request's KV out of HBM.
 
         With a cold tier that has room the blocks migrate whole-request
-        (``swap_out``) and the request resumes by swapping back in; otherwise
+        (``swap_out``). HBF KV is read at its cold home when execution resumes;
+        external KV is copied back into HBM. Otherwise
         the blocks are freed and the request must recompute its context.
         """
 
         state = self._state(request_id)
         blocks = state.total_blocks
+        if state.tier == "hbf" and blocks:
+            return {"request_id": request_id, "mode": "swap_out", "blocks": 0, "bytes": 0}
         if state.tier != KV_HOT_TIER or blocks == 0:
             raise HBServeError(
                 f"request {request_id} holds no hot KV blocks to preempt"
@@ -1171,17 +1198,17 @@ class HBServePlacement:
     def _kv_pieces(
         self, object_id: str, offset: int, byte_count: int
     ) -> list[tuple[int, int]]:
-        """Split one logical KV extent into physically contiguous HBM pieces."""
+        """Split logical KV at its current HBM or directly readable HBF home."""
 
         parts = object_id.split("/")
         # request/<id>/model/<model>/layer/<layer>/kv
         if len(parts) != 7 or parts[0] != "request" or parts[6] != "kv":
             raise HBServeError(f"malformed KV object ID {object_id}")
         state = self._state(parts[1])
-        if state.tier != KV_HOT_TIER:
-            raise HBServeError(
-                f"KV of request {parts[1]} is not resident in HBM at mapping time"
-            )
+        if state.tier not in (KV_HOT_TIER, "hbf"):
+            raise HBServeError("Off-package KV must be installed before GPU consumption")
+        pool = self._hot if state.tier == KV_HOT_TIER else self._cold
+        assert pool is not None
         layer = int(parts[5])
         if layer >= state.model.num_layers or state.model.model_id != parts[3]:
             raise HBServeError(f"KV object {object_id} names a foreign layer")
@@ -1199,7 +1226,7 @@ class HBServePlacement:
                 raise HBServeError(
                     f"KV access to {object_id} exceeds its allocated blocks"
                 )
-            addr = self._hot.address(blocks[ordinal]) + within
+            addr = pool.address(blocks[ordinal]) + within
             if pieces and pieces[-1][0] + pieces[-1][1] == addr:
                 pieces[-1] = (pieces[-1][0], pieces[-1][1] + take)
             else:
@@ -1213,11 +1240,22 @@ class HBServePlacement:
         batch: CanonicalServingBatch,
         *,
         session_frontier_ns: float,
+        projection_observer: Callable[
+            [Mapping[str, str], Mapping[str, tuple[str, ...]]], None
+        ] | None = None,
     ) -> TransactionBatch:
+        """Map work, optionally exposing read-only semantic-to-transaction IDs.
+
+        The observer runs once after successful batch construction. Its first
+        mapping includes every operation's terminal, including barriers; its
+        second contains the emitted fragments of memory operations only.
+        """
         batch_id = batch.schedule.batch_id
         if (self.spec.prefix_cache_bytes and batch.schedule.model_id in self._moe_models
                 and batch.router_trace_sha256 != self.router.digest):
             raise HBServeError('MoE batch router differs from the prefix-cache router')
+        if batch.timing_model == 'gpu_calibrated' and self.spec.kv_block_tokens != 256:
+            raise HBServeError('the measured FA2 address layout requires 256-token KV blocks')
         if batch_id in self._seen_batches:
             raise HBServeError("placement saw a duplicate batch ID")
         if (
@@ -1234,16 +1272,18 @@ class HBServePlacement:
         for batch_slice in batch.schedule.slices:
             state = self._state(batch_slice.request_id)
             if (
-                state.tier != KV_HOT_TIER
+                state.tier not in (KV_HOT_TIER, "hbf")
                 or state.blocks_per_layer * self.spec.kv_block_tokens
                 < batch_slice.token_end
             ):
                 raise HBServeError(
-                    f"request {batch_slice.request_id} has no reserved hot KV "
+                    f"request {batch_slice.request_id} has no GPU-readable reserved KV "
                     "blocks for this iteration"
                 )
 
         activation = self._activate_model(batch.schedule.model_id)
+        if self._weight_cache is not None:
+            self._weight_cache.begin_batch()
         transactions: list[Transaction] = []
         projection: dict[str, tuple[str, ...]] = {}
         terminal: dict[str, str] = {}
@@ -1456,32 +1496,16 @@ class HBServePlacement:
                         fetch_dependencies = [
                             release, *swap_out_reads, *cold_dependencies
                         ]
-                        if self._cold.tier == "hbf":
-                            read = emit(
-                                target="HBF_LOGICAL",
-                                op="R",
-                                addr=cold_addr,
-                                byte_count=byte_count,
-                                dependencies=fetch_dependencies,
-                            )
-                            account_migration("HBF_LOGICAL", "R", byte_count)
-                            arrival = cold_links(
-                                target="D2D_HBF_TO_HBM",
-                                op="R",
-                                addr=cold_addr,
-                                byte_count=byte_count,
-                                dependency=read,
-                            )
-                        else:
-                            read = emit(
-                                target="EXTERNAL",
-                                op="R",
-                                addr=cold_addr,
-                                byte_count=byte_count,
-                                dependencies=fetch_dependencies,
-                            )
-                            arrival = [read]
-                            account_migration("EXTERNAL", "R", byte_count)
+                        # Only off-package KV requires an HBM restore.
+                        # HBF requests continue execution at their current home.
+                        if self._cold.tier != "external":
+                            raise HBServeError("only external KV can require swap-in")
+                        read = emit(
+                            target="EXTERNAL", op="R", addr=cold_addr,
+                            byte_count=byte_count, dependencies=fetch_dependencies,
+                        )
+                        arrival = [read]
+                        account_migration("EXTERNAL", "R", byte_count)
                         for block in cold_blocks:
                             self._cold_block_fences[block] = read
                         swap_in_writes.append(
@@ -1510,6 +1534,12 @@ class HBServePlacement:
         # --- canonical operations --------------------------------------
         logical_bytes = 0
         logical_by_target: dict[str, dict[str, int]] = {}
+        from hbserve.gpu_addresses import iter_operation_ranges, MEMORY_PROJECTION
+        gpu_projections = {row['memory_projection'] for row in batch.audit.values()
+                           if 'memory_projection' in row}
+        if len(gpu_projections) > 1:
+            raise HBServeError('one calibrated batch cannot mix GPU memory projections')
+        gpu_projection = next(iter(gpu_projections), MEMORY_PROJECTION)
         for operation in batch.operations:
             dependencies = [terminal[item] for item in operation.dependencies]
             if not dependencies:
@@ -1535,40 +1565,71 @@ class HBServePlacement:
                     })
                 continue
             assert operation.object_id is not None and operation.op is not None
-            if operation.object_id.startswith("workspace/"):
-                if operation.offset + operation.bytes > self.spec.hbm_runtime_reserve_bytes:
-                    raise HBServeError("calibrated workspace exceeds the HBM runtime reserve")
-                pieces = [(self.hbm_kv_end + operation.offset, operation.bytes)]
-                target = "HBM"
-            elif operation.object_id.startswith("request/"):
-                pieces = self._kv_pieces(
-                    operation.object_id, operation.offset, operation.bytes
-                )
+            if self._object_tier.get(operation.object_id) == "hbf_cached_hbm":
+                if operation.op != "R" or self.objects[operation.object_id].mutable:
+                    raise HBServeError("HBF weight cache accepts immutable reads only")
+                assert self._weight_cache is not None
+                pieces, mapped_ids = [], []
+                for offset,byte_count in iter_operation_ranges(operation):
+                    local_pieces, local_ids = self._weight_cache.read(
+                        placed=self._static[operation.object_id], offset=offset,
+                        byte_count=byte_count, dependencies=dependencies,
+                        emit=emit, hbm_pieces=self._hbm_stripe_pieces,
+                    )
+                    pieces.extend(local_pieces)
+                    mapped_ids.extend(local_ids)
                 target = "HBM"
             else:
-                placed = self._resolve_weight(operation.object_id)
-                if operation.offset + operation.bytes > placed.bytes:
-                    raise HBServeError(
-                        f"mapped access escapes object {operation.object_id}"
+                if operation.object_id.startswith("workspace/"):
+                    pieces = []
+                    for offset,byte_count in iter_operation_ranges(operation):
+                        if offset + byte_count > self.spec.hbm_runtime_reserve_bytes:
+                            raise HBServeError("calibrated workspace exceeds the HBM runtime reserve")
+                        pieces.append((self.hbm_kv_end + offset, byte_count))
+                    target = "HBM"
+                elif operation.object_id.startswith("request/"):
+                    pieces = [part for offset,byte_count in iter_operation_ranges(operation)
+                              for part in self._kv_pieces(operation.object_id,offset,byte_count)]
+                    target = "HBF_LOGICAL" if self._state(operation.object_id.split("/")[1]).tier == "hbf" else "HBM"
+                    if target == "HBF_LOGICAL":
+                        assert self._cold is not None
+                        # A previous asynchronous swap-out may still be writing
+                        # this HBF allocation when its request resumes.
+                        dependencies.extend(
+                            self._cold_block_fences[block]
+                            for addr, byte_count in pieces
+                            for block in range(
+                                (addr - self._cold.begin) // self.kv_block_bytes,
+                                (addr + byte_count - self._cold.begin + self.kv_block_bytes - 1) // self.kv_block_bytes,
+                            )
+                            if block in self._cold_block_fences
+                        )
+                else:
+                    placed = self._resolve_weight(operation.object_id)
+                    pieces = []
+                    for offset,byte_count in iter_operation_ranges(operation):
+                        if offset + byte_count > placed.bytes:
+                            raise HBServeError(
+                                f"mapped access escapes object {operation.object_id}"
+                            )
+                        pieces.append((placed.addr + offset, byte_count))
+                    target = placed.target
+                if target == "HBM":
+                    pieces = [
+                        part
+                        for piece in pieces
+                        for part in self._hbm_stripe_pieces(*piece)
+                    ]
+                mapped_ids = [
+                    emit(
+                        target=target,
+                        op=operation.op,
+                        addr=addr,
+                        byte_count=byte_count,
+                        dependencies=dependencies,
                     )
-                pieces = [(placed.addr + operation.offset, operation.bytes)]
-                target = placed.target
-            if target == "HBM":
-                pieces = [
-                    part
-                    for piece in pieces
-                    for part in self._hbm_stripe_pieces(*piece)
+                    for addr, byte_count in pieces
                 ]
-            mapped_ids = [
-                emit(
-                    target=target,
-                    op=operation.op,
-                    addr=addr,
-                    byte_count=byte_count,
-                    dependencies=dependencies,
-                )
-                for addr, byte_count in pieces
-            ]
             terminal[operation.id] = (
                 mapped_ids[0]
                 if len(mapped_ids) == 1
@@ -1607,6 +1668,15 @@ class HBServePlacement:
             "schema": REMAP_SCHEMA,
             "result": "pass",
             "batch_id": batch_id,
+            **({"gpu_memory_projection": {
+                "model": gpu_projection,
+                "application": batch.audit_summary().get('application_addresses'),
+                "cache_misses_measured": False,
+                "range_order": (
+                    "kernel tile/slice traversal with within-tile coverage coalescing; no native inter-warp timing claim"
+                    if gpu_projection == MEMORY_PROJECTION else
+                    "sequential tensor coverage with page-local K/V; GPU application address order unvalidated"),
+            }} if batch.timing_model=='gpu_calibrated' else {}),
             # Explicit frontend information for memory policies. Arrival waits
             # and synchronization barriers are never compute opportunities.
             "compute_windows": compute_windows,
@@ -1647,6 +1717,8 @@ class HBServePlacement:
                 "external_model_load_bytes": activation_source_bytes,
                 "hbm_model_install_bytes": activation_hbm_write_bytes,
                 "model_load_chunks": activation_chunks,
+                "hbf_weight_fill_bytes": 0 if self._weight_cache is None else self._weight_cache.counters["fill_bytes"],
+                "hbm_weight_install_bytes": 0 if self._weight_cache is None else self._weight_cache.counters["hbm_install_bytes"],
                 "kv_swap_out_bytes": migration_summary["swap_out"]["bytes"],
                 "kv_swap_in_bytes": migration_summary["swap_in"]["bytes"],
             },
@@ -1667,7 +1739,7 @@ class HBServePlacement:
             }
         )
         self._seen_batches.add(batch_id)
-        return TransactionBatch(
+        mapped = TransactionBatch(
             batch_id=batch_id,
             logical_trace_sha256=batch.digest,
             routing_sidecar_sha256=routing_digest,
@@ -1675,6 +1747,9 @@ class HBServePlacement:
             retain=tuple(sorted(set(self._cold_block_fences.values()))),
             receipt=receipt,
         )
+        if projection_observer is not None:
+            projection_observer(MappingProxyType(terminal), MappingProxyType(projection))
+        return mapped
 
     def _cumulative(self) -> dict[str, int]:
         return {

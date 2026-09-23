@@ -2,10 +2,9 @@
 """Strict contracts for HBServe request-driven LLM workloads.
 
 These classes describe *derived* memory demand and *modeled* compute time.
-They do not claim that the result is a measured GPU load/store trace.  The
-fixed traffic and compute semantics are explicit so that a later kernel/tile
-frontend can replace them without silently changing the meaning of an
-experiment.
+The calibrated backend additionally carries trace-checked application address
+plans and kernel-ordered tensor-coverage walks. These are explicitly distinct
+from measured cache misses or a native GPU issue-time trace.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ from functools import cached_property
 import hashlib
 import json
 import math
+import re
 from typing import Any, Mapping, Protocol, Sequence
 
 
@@ -30,7 +30,7 @@ ROUTER_TRACE_SCHEMA = {
 }
 CANONICAL_BATCH_SCHEMA = {
     "name": "hbserve.canonical_batch",
-    "version": 2,
+    "version": 3,
 }
 
 TRAFFIC_MODEL = {
@@ -105,14 +105,11 @@ def _finite(value: Any, description: str, *, minimum: float = 0.0) -> float:
     return result
 
 
+_SAFE_IDENTIFIER = re.compile(r"[A-Za-z0-9_.:/-]+")
+
+
 def _identifier(value: Any, description: str) -> str:
-    if not isinstance(value, str) or not value or any(
-        not (
-            character.isascii()
-            and (character.isalnum() or character in "_-.:/")
-        )
-        for character in value
-    ):
+    if not isinstance(value, str) or _SAFE_IDENTIFIER.fullmatch(value) is None:
         raise HBServeError(
             f"{description} is not a non-empty protocol-safe identifier"
         )
@@ -1461,6 +1458,12 @@ class RooflineTimingProvider:
 
 @dataclass(frozen=True)
 class SemanticOperation:
+    """One dependency node; a walk's bytes are its total, not its address span.
+
+    Contiguous objects use offset/bytes directly. GPU coverage walks expand
+    lazily during placement and may skip page padding or traverse backwards.
+    """
+
     id: str
     op: str | None
     object_id: str | None
@@ -1471,6 +1474,7 @@ class SemanticOperation:
     role: str
     span_start: str | None = None
     span_scale: float = 1.0
+    walk: Mapping[str, Any] | None = None
 
     @property
     def is_barrier(self) -> bool:
@@ -1487,7 +1491,7 @@ class SemanticOperation:
         elif self.span_scale != 1.0:
             raise HBServeError("span scaling requires a start dependency")
         if self.is_barrier:
-            if self.object_id is not None or self.offset != 0 or self.bytes != 0:
+            if self.object_id is not None or self.offset != 0 or self.bytes != 0 or self.walk is not None:
                 raise HBServeError(
                     f"semantic barrier {self.id} has memory fields"
                 )
@@ -1504,6 +1508,8 @@ class SemanticOperation:
                     f"semantic memory operation {self.id} has a duration"
                 )
             _checked_add(self.offset, self.bytes, f"semantic operation {self.id}")
+            if self.walk is not None and self.walk.get('kind') not in {'fa2_kv','kv_append','kv_tensor','marlin_qkv'}:
+                raise HBServeError('unsupported GPU tensor-coverage walk')
         if len(self.dependencies) != len(set(self.dependencies)):
             raise HBServeError(
                 f"semantic operation {self.id} repeats a dependency"
@@ -1528,6 +1534,7 @@ class SemanticOperation:
             "role": self.role,
             **({"span_start": self.span_start, "span_scale": self.span_scale}
                if self.span_start is not None else {}),
+            **({"walk": dict(self.walk)} if self.walk is not None else {}),
         }
 
 
@@ -1620,7 +1627,16 @@ class CanonicalServingBatch:
         token_id_sources: dict[str, int] = {}
         expert_routes: list[dict[str, int]] = []
         barrier_duration_ns = 0.0
+        application_reads = 0
+        covered_tensor_bytes = 0
+        application_kernels: dict[str, int] = {}
         for operation in self.operations:
+            application = self.audit[operation.id].get('application_access_summary')
+            if application is not None:
+                application_reads += application['covered_read_bytes']
+                covered_tensor_bytes += application['covered_tensor_bytes']
+                kernel = self.audit[operation.id]['application_access_plan']['kernel']
+                application_kernels[kernel] = application_kernels.get(kernel,0)+1
             row = roles.setdefault(
                 operation.role,
                 {
@@ -1662,6 +1678,14 @@ class CanonicalServingBatch:
                 expert_routes,
                 key=lambda row: (row["layer"], row["expert"]),
             ),
+            **({"application_addresses": {
+                "covered_instruction_read_bytes": application_reads,
+                "covered_tensor_bytes": covered_tensor_bytes,
+                "operators_by_kernel": application_kernels,
+                "memory_projection": "kernel_ordered_tensor_coverage_v1",
+                "hardware_cache_filtering_validated": False,
+                "scope": "KV and supported small-M QKV input/packed weights/scales; other tensors retain explicit footprint estimates",
+            }} if application_kernels else {}),
         }
 
     @cached_property

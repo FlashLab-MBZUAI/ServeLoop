@@ -15,6 +15,9 @@ HBServe currently provides:
   migration, and preemption;
 - architecture-derived object sizes and exact byte conservation through
   placement;
+- trace-checked A100 FA2/Marlin application addresses for the covered kernel
+  families, with a kernel-ordered coverage projection in calibrated runs
+  ([scope and evidence](gpu-address-model.md));
 - a persistent memory-system backend with causal completion feedback.
 
 It does not yet reconstruct GPU kernel issue timing, SM scheduling, cache hits,
@@ -78,6 +81,6 @@ passes all of these gates:
 - privacy review proving that no prompts, tokens, virtual addresses, hostnames,
   or account identifiers leak into the public artifact.
 
-Until then, HBServe deliberately reports the current object-level backend and
-its limitations rather than upgrading synthetic detail into a measurement
-claim.
+Current calibrated runs report application-address evidence separately from
+their modeled memory projection. Other timing backends retain object-level
+traffic; neither path claims measured cache misses or native issue timing.
