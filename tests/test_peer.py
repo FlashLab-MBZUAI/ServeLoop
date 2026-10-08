@@ -202,7 +202,8 @@ class PeerTests(unittest.TestCase):
                                   hbf_logical_capacity_bytes=config.logical_hbf_capacity_bytes)
                 preflight = mapper.preflight(selected_trace)
                 session = SimulationSession(simulator_path=self.simulator, system_config=config,
-                                            enable_hbm=True, enable_hbf=True, hbm_capacity_bytes=hbm_bytes,
+                                            enable_hbm=True, enable_hbf=True,
+                                            hbm_capacity_bytes=hbm_bytes + config.hbf_buffer_hbm_bytes,
                                             initial_hbf_logical_first_lpn=mapper.initial_hbf_logical_first_lpn,
                                             initial_hbf_logical_pages=mapper.initial_hbf_logical_pages)
                 completions = []

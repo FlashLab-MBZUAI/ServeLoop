@@ -1,0 +1,12 @@
+{
+  "repository_url": "https://github.com/FlashLab-MBZUAI/HBFSim",
+  "commit": "e9ddd1c8980d56f9f6a14e5241fb7903b6b6636c",
+  "client_files_sha256": {
+    "__init__.py": "ec639c973a6dca34def2bdaf673c78e82be70a5675408cce10d825e456647415",
+    "fixed_footprint_metrics.py": "675745c444b2338c3e4e8caa44d39f04da005c046f07fd7711da5c5922781077",
+    "provenance.py": "82d6d4acddeb17929edba45ab1a45040317581ca085a0bee871f246f47866a00",
+    "simulation_session.py": "04b854abc4325fc0f7673c52632c6cb6dfe3463b27732265c4a6dc09aec63575",
+    "transaction_protocol.py": "5d971673ae4d6c986c782d2ec75e309194f68fecc1f2e11a663d6d1f4019e667"
+  },
+  "claim_scope": "source compatibility; not hardware calibration"
+}

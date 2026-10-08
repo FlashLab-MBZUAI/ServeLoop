@@ -1250,6 +1250,15 @@ class HBServePlacement:
         mapping includes every operation's terminal, including barriers; its
         second contains the emitted fragments of memory operations only.
         """
+        # The public HBFSim protocol supports fixed-duration barriers only.
+        # Reject legacy calibrated spans before activating weights or changing
+        # any placement state; dropping the scale would change overlap timing.
+        if any(operation.span_scale != 1.0 for operation in batch.operations):
+            raise HBServeError(
+                "the current HBFSim protocol cannot execute scaled memory spans; "
+                "use roofline, memory_only or linear timing, or migrate the "
+                "GPU calibration to a supported timing representation"
+            )
         batch_id = batch.schedule.batch_id
         if (self.spec.prefix_cache_bytes and batch.schedule.model_id in self._moe_models
                 and batch.router_trace_sha256 != self.router.digest):
@@ -1301,8 +1310,6 @@ class HBServePlacement:
             dependencies: Sequence[str],
             duration_ns: float = 0.0,
             stack: int | None = None,
-            span_start: str | None = None,
-            span_scale: float = 1.0,
         ) -> str:
             nonlocal counter
             identifier = f"mapped/b{batch_id}/p{counter}"
@@ -1318,8 +1325,6 @@ class HBServePlacement:
                     duration_ns=duration_ns,
                     dependencies=tuple(dict.fromkeys(dependencies)),
                     stack=stack,
-                    span_start=span_start,
-                    span_scale=span_scale,
                 )
             )
             return identifier
@@ -1552,8 +1557,6 @@ class HBServePlacement:
                     byte_count=0,
                     dependencies=dependencies,
                     duration_ns=operation.duration_ns,
-                    span_start=terminal[operation.span_start] if operation.span_start else None,
-                    span_scale=operation.span_scale,
                 )
                 if operation.role.endswith(("/compute", "/routing_ready")) and operation.duration_ns > 0:
                     compute_windows.append({

@@ -637,6 +637,11 @@ def _topology_preflight(
         ),
         "population_bytes": context.layout.address_space_bytes,
         "population_fits_execution_path": remapper is not None,
+        "execution_supported": not (topology.hbf_stacks and not topology.hbm_stacks),
+        "execution_block_reason": (
+            "HBF controller storage requires a physical HBM tier"
+            if topology.hbf_stacks and not topology.hbm_stacks else None
+        ),
         "expected_outcome": topology.expected_outcome,
         "capacity_oom_validation": (
             dict(topology.capacity_oom_validation)
@@ -1131,6 +1136,12 @@ def run_reference_experiment(
             "selected topology id(s) are validated expected capacity OOM "
             "rows and cannot execute: " + ", ".join(blocked)
         )
+    unsupported = [topology.id for topology in executed
+                   if topology.hbf_stacks and not topology.hbm_stacks]
+    if unsupported:
+        _fail("HBF controller storage requires a physical HBM tier; unsupported "
+              "topologies: " + ", ".join(unsupported) +
+              ". Select supported rows with --topologies.")
     if simulator_path is None:
         _fail("an external simulator_path is required for execution")
     simulator = simulator_path.resolve()

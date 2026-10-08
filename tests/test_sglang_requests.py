@@ -13,11 +13,18 @@ import unittest
 from hbserve.sglang.requests import (
     bind_request_ids, encode_trace, load_requests, request_stats_on_input_clock, validate_request_stats,
 )
-from workloads.production_request_trace.canonical import ProductionTrace, RECORD_SCHEMA, publish_trace
-from workloads.production_request_trace.registry import load_source_spec
+try:
+    from workloads.production_request_trace.canonical import ProductionTrace, RECORD_SCHEMA, publish_trace
+    from workloads.production_request_trace.registry import load_source_spec
+except ModuleNotFoundError as error:
+    if not (error.name == "workloads" or error.name.startswith("workloads.production_request_trace")):
+        raise
+    ProductionTrace = None
 
 
 def fixture(block=16, *, synthetic=False):
+    if ProductionTrace is None:
+        raise unittest.SkipTest("production trace importer is absent from the public HBFSim release")
     source_id = "qwen_bailian_trace_a" if block == 16 else (
         "mooncake_fast25_synthetic" if synthetic else "mooncake_fast25_conversation")
     source = load_source_spec(source_id).manifest_source()

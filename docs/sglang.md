@@ -97,7 +97,7 @@ GPU kernel layout.
 
 Run the commands below from the HBFSim checkout, with both repositories on
 `PYTHONPATH`. System profiles are explicitly selected from HBServe; they target
-HBFSim `60e3f66` (see [configuration compatibility](configuration.md)).
+HBFSim `e9ddd1c` (2026-09-30 public release) (see [configuration compatibility](configuration.md)).
 
 Each JSONL row contains integer `arrival_ns`, nonempty `token_ids`, and positive
 `output_tokens`. Arrival times must be nondecreasing. Shared token prefixes
@@ -256,3 +256,8 @@ discard, pressure eviction/reload, detached background writes and source reuse,
 nonzero arrival, capacity reservations, dtype geometry and chunk output timing.
 They complement actual native scheduler runs; they are not a replacement for
 that end-to-end execution.
+
+The public backend does not bundle the production_request_trace importer.
+Native token JSONL remains supported; canonical Bailian/Mooncake import requires
+a separately provided matching importer. GPU runtime and measured operator
+profiles remain optional external dependencies.
