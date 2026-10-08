@@ -142,7 +142,7 @@ def load_requests(path: Path, vocab_size: int, *, source_id=None, start=0, count
         from workloads.production_request_trace.qwen_bailian import import_qwen_bailian
         from workloads.production_request_trace.mooncake_fast25 import import_mooncake_fast25
     except ImportError as error:
-        raise ValueError("trace input requires the HBFSim checkout on PYTHONPATH") from error
+        raise ValueError("canonical production trace input requires an HBFSim checkout with the production_request_trace importer; the 2026-09-30 public release does not include it") from error
     if path.is_dir():
         if source_id is not None:
             raise ValueError("a canonical bundle already identifies its source; omit --trace-source-id")

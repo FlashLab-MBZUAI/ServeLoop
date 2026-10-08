@@ -177,6 +177,6 @@ the tests do not execute the full miniquick or full-scale physical matrix.
 HBServe is alpha software. Schemas are versioned, but compatibility is not yet
 promised. The project is available under the [MIT License](LICENSE).
 
-System profiles and the bundled client target HBFSim `60e3f66` and its OCP model. See
+System profiles and the bundled client target HBFSim `e9ddd1c` (2026-09-30 public release) and its OCP model. See
 [configuration compatibility](docs/configuration.md#backend-compatibility-and-ocp-migration)
 for physical changes, historical-result limits, and explicit validation commands.
