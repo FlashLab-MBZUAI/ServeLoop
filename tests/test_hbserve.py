@@ -688,6 +688,43 @@ class ContractAndCompilerTests(unittest.TestCase):
 
 
 class PlacementTests(unittest.TestCase):
+    def test_legacy_scaled_span_is_rejected_before_placement_changes(self) -> None:
+        model = _dense()
+        request = RequestSpec("r0", 0.0, model.model_id, 2, 1)
+        slices = (_slice("r0", 0, 2, phase="prefill", emits=True),)
+        batch = HBServeCompiler(
+            models={model.model_id: model}, request_trace=_trace(request)
+        ).compile(ScheduledBatch(0, model.model_id, slices, 0.0))
+        barrier = next(op for op in batch.operations
+                       if op.is_barrier and op.dependencies)
+        legacy = replace(barrier, span_start=barrier.dependencies[0], span_scale=1.5)
+        scaled = replace(batch, operations=tuple(
+            legacy if op.id == barrier.id else op for op in batch.operations
+        ))
+        placement = HBServePlacement(
+            models={model.model_id: model}, spec=_spec({model.model_id: model})
+        )
+        placement.admit_request(request)
+        placement.reserve(0, slices)
+        before = placement._state_receipt()
+        with self.assertRaisesRegex(HBServeError, "cannot execute scaled memory spans"):
+            placement.map_batch(scaled, session_frontier_ns=0.0)
+        self.assertEqual(placement._state_receipt(), before)
+        # The rejected batch ID remains usable, and a unit span is exactly
+        # equivalent to its ordinary dependency barrier.
+        unit = replace(batch, operations=tuple(
+            replace(legacy, span_scale=1.0) if op.id == barrier.id else op
+            for op in batch.operations
+        ))
+        mapped = placement.map_batch(unit, session_frontier_ns=0.0)
+        other = HBServePlacement(
+            models={model.model_id: model}, spec=_spec({model.model_id: model})
+        )
+        other.admit_request(request)
+        other.reserve(0, slices)
+        self.assertEqual(mapped.transactions,
+                         other.map_batch(batch, session_frontier_ns=0.0).transactions)
+
     def test_projection_observer_is_read_only_and_preserves_the_mapped_payload(self) -> None:
         from types import MappingProxyType
         from unittest.mock import patch

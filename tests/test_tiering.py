@@ -22,7 +22,10 @@ def tiered_experiment(directory):
     experiment = json.loads(path.read_text())
     base = next(row for row in experiment["topologies"] if row["id"] == "6h2f")
     overlay = directory / "cache.cfg"
-    overlay.write_text("hbm-capacity-bytes=65536\n")
+    # Preserve a 64 KiB application cache after reserving controller HBM.
+    from hbfsim_client.simulation_session import ResolvedSystemConfig
+    config = ResolvedSystemConfig.load(tuple(map(Path, base["system_configs"])))
+    overlay.write_text(f"hbm-capacity-bytes={65536 + config.hbf_buffer_hbm_bytes}\n")
     experiment["topologies"] = []
     for policy in ("address_only_lru", "decayed_lfu", "threshold_promotion", "class_aware"):
         row = deepcopy(base)

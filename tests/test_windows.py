@@ -192,6 +192,27 @@ class WindowTests(unittest.TestCase):
 class PhysicalWindowTests(unittest.TestCase):
     simulator: Path | None = None
 
+    def test_zero_hbm_is_rejected_before_any_topology_executes(self) -> None:
+        if self.simulator is None:
+            self.skipTest("no simulator supplied")
+        from unittest.mock import patch
+        from hbserve.windows.experiment import (
+            FixedFootprintExperimentError, build_preflight, run_reference_experiment,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            experiment = tiny_experiment(Path(directory))
+            receipt = build_preflight(experiment)
+            row = next(row for row in receipt["topologies"] if row["id"] == "0h8f")
+            self.assertFalse(row["execution_supported"])
+            with patch("hbserve.windows.experiment.execute_topology") as execute:
+                with self.assertRaisesRegex(FixedFootprintExperimentError,
+                                            "physical HBM tier.*0h8f"):
+                    run_reference_experiment(
+                        experiment_path=experiment, simulator_path=self.simulator,
+                        topology_ids=("all-hbm", "0h8f"),
+                    )
+                execute.assert_not_called()
+
     def test_selected_topology_executes_the_same_trace(self) -> None:
         if self.simulator is None:
             self.skipTest("no simulator supplied")
@@ -200,13 +221,13 @@ class PhysicalWindowTests(unittest.TestCase):
             experiment = tiny_experiment(root)
             self.assertEqual(main([
                 "run", "--experiment", str(experiment), "--simulator", str(self.simulator),
-                "--topologies", "all-hbm,0h8f,8h0f-dram", "--allow-dirty", "--out", str(root / "out"),
+                "--topologies", "all-hbm,6h2f,8h0f-dram", "--allow-dirty", "--out", str(root / "out"),
             ]), 0)
             result_path, = (root / "out").glob("*/result.json")
             result = load_json_object(result_path, "run")
             self.assertEqual(result["execution_mode"], "fixed_window")
             rows = result["reference_topology_results"]
-            self.assertEqual([row["id"] for row in rows], ["all-hbm", "0h8f", "8h0f-dram"])
+            self.assertEqual([row["id"] for row in rows], ["all-hbm", "6h2f", "8h0f-dram"])
             for row in rows:
                 self.assertEqual(row["trace_sha256"], result["trace"]["trace_sha256"])
                 self.assertGreater(row["metrics"]["final_drain_time_ns"], 0)
