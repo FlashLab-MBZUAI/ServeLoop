@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from copy import copy
 from functools import cached_property
 import hashlib
 import math
+import re
 from typing import Any, Iterable, Mapping
 
 
@@ -60,11 +62,11 @@ def _finite(value: Any, description: str) -> float:
     return result
 
 
+_SAFE_IDENTIFIER = re.compile(r"[\w.:/\-]+")
+
+
 def require_safe_identifier(value: str, description: str) -> str:
-    if not value or any(
-        not (character.isalnum() or character in "_-.:/")
-        for character in value
-    ):
+    if not isinstance(value, str) or _SAFE_IDENTIFIER.fullmatch(value) is None:
         raise TransactionProtocolError(
             f"{description} is not protocol-safe: {value!r}"
         )
@@ -72,8 +74,8 @@ def require_safe_identifier(value: str, description: str) -> str:
 
 
 def _format_float(value: float) -> str:
-    normalized = _finite(value, "transaction floating-point field")
-    return format(normalized, ".17g")
+    # Only used by the serializer for transactions already validated by a batch.
+    return format(float(value), ".17g")
 
 
 def _mix64(value: int) -> int:
@@ -275,8 +277,10 @@ class Transaction:
     duration_ns: float = 0.0
     dependencies: tuple[str, ...] = ()
     stack: int | None = None
-    span_start: str | None = None
-    span_scale: float = 1.0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.dependencies, tuple):
+            object.__setattr__(self, "dependencies", tuple(self.dependencies))
 
     def validate(self) -> None:
         require_safe_identifier(self.id, "transaction id")
@@ -284,13 +288,6 @@ class Transaction:
             raise TransactionProtocolError(f"unknown transaction target: {self.target}")
         _finite(self.issue_ns, f"{self.id}.issue_ns")
         _finite(self.duration_ns, f"{self.id}.duration_ns")
-        _finite(self.span_scale, f"{self.id}.span_scale")
-        if self.span_scale < 1 or (self.span_start is None and self.span_scale != 1):
-            raise TransactionProtocolError("span scaling requires a start and scale >= 1")
-        if self.span_start is not None and (
-            self.target != "BARRIER" or self.span_start not in self.dependencies
-        ):
-            raise TransactionProtocolError("span start must be a barrier dependency")
         if self.target == "BARRIER":
             if (
                 self.op is not None
@@ -347,8 +344,6 @@ class Transaction:
             f"issue_ns={_format_float(self.issue_ns)} "
             f"duration_ns={_format_float(self.duration_ns)} "
             f"deps={dependencies} stack={stack}"
-            + (f" span_start={self.span_start} span_scale={_format_float(self.span_scale)}"
-               if self.span_start is not None else "")
         )
 
 
@@ -380,6 +375,8 @@ class TransactionBatch:
     producer on the same session do not undo a remapper's declaration.
     ``completions`` asks the engine for per-transaction completion records
     (``False`` keeps only the aggregate receipt).
+    ``observe`` requests only start/finish times for selected DAG nodes,
+    including barriers, independently of complete memory diagnostics.
     """
 
     batch_id: int
@@ -390,8 +387,23 @@ class TransactionBatch:
     frontier: tuple[str, ...] | None = None
     retain: tuple[str, ...] | None = None
     completions: bool = True
+    observe: tuple[str, ...] = ()
+
+    def with_receipt(self, receipt: Mapping[str, Any]) -> TransactionBatch:
+        """Attach metadata while sharing the validated, unchanged wire payload.
+
+        A real transaction/options change still constructs and validates a new
+        batch. Receipt-only copies retain all lazily cached graph data.
+        """
+        if not isinstance(receipt, Mapping):
+            raise TransactionProtocolError("transaction batch receipt must be a mapping")
+        updated = copy(self)
+        object.__setattr__(updated, "receipt", receipt)
+        return updated
 
     def __post_init__(self) -> None:
+        if not isinstance(self.transactions, tuple):
+            object.__setattr__(self, "transactions", tuple(self.transactions))
         require_integer(self.batch_id, "transaction batch id")
         _lower_hex_sha256(
             self.logical_trace_sha256, "transaction batch logical trace digest"
@@ -416,6 +428,9 @@ class TransactionBatch:
                     f"transaction id is duplicated: {transaction.id}"
                 )
             seen.add(transaction.id)
+        if (not isinstance(self.observe, tuple) or len(set(self.observe)) != len(self.observe)
+                or any(identifier not in seen for identifier in self.observe)):
+            raise TransactionProtocolError("transaction batch observe must name unique IDs in this batch")
         if self.frontier is not None:
             if not isinstance(self.frontier, tuple):
                 raise TransactionProtocolError(
@@ -446,10 +461,37 @@ class TransactionBatch:
     @cached_property
     def transaction_trace_sha256(self) -> str:
         digest = hashlib.sha256()
-        for transaction in self.transactions:
-            digest.update(transaction._protocol_line_unchecked().encode("ascii"))
-            digest.update(b"\n")
+        for chunk in self._protocol_chunks:
+            digest.update(chunk.encode("ascii"))
         return digest.hexdigest()
+
+    @cached_property
+    def census(self) -> dict[str, Any]:
+        """One traversal for all completion-accounting expectations."""
+        by_target = {target: {"transactions": 0, "bytes": 0} for target in TRANSACTION_TARGETS}
+        latency = {target: {"read": 0, "write": 0} for target in TRANSACTION_TARGETS}
+        edges = 0
+        for transaction in self.transactions:
+            row = by_target[transaction.target]
+            row["transactions"] += 1
+            row["bytes"] += transaction.bytes
+            edges += len(transaction.dependencies)
+            if transaction.target != "BARRIER":
+                latency[transaction.target]["read" if transaction.op == "R" else "write"] += 1
+        barriers = by_target["BARRIER"]["transactions"]
+        return {"by_target": by_target, "latency_transactions": latency, "scalars": {
+            "transactions": len(self.transactions),
+            "memory_transactions": len(self.transactions) - barriers,
+            "barriers": barriers, "dependency_edges": edges,
+            "transaction_bytes": sum(row["bytes"] for row in by_target.values()),
+        }}
+
+    @cached_property
+    def _protocol_chunks(self) -> tuple[str, ...]:
+        # Batch-local storage: serialize once for both the digest and the pipe.
+        return tuple(self._pack_lines(
+            (transaction._protocol_line_unchecked() + "\n" for transaction in self.transactions),
+            1024 * 1024))
 
     def begin_line(self) -> str:
         """The protocol ``BEGIN`` header for this batch (without newline)."""
@@ -464,6 +506,8 @@ class TransactionBatch:
             fields.append("retain=" + (",".join(self.retain) or "-"))
         if not self.completions:
             fields.append("completions=0")
+        if self.observe:
+            fields.append("observe=" + ",".join(self.observe))
         return " ".join(fields)
 
     @property
@@ -477,17 +521,25 @@ class TransactionBatch:
         *,
         target_bytes: int = 1024 * 1024,
     ) -> Iterable[str]:
-        """Yield the exact transaction payload without materializing the batch."""
+        """Yield cached wire chunks; alternate sizes preserve whole TX lines."""
 
         require_integer(
             target_bytes,
             "transaction protocol chunk target",
             minimum=1,
         )
+        if target_bytes == 1024 * 1024:
+            yield from self._protocol_chunks
+        else:
+            yield from self._pack_lines(
+                (line for chunk in self._protocol_chunks for line in chunk.splitlines(keepends=True)),
+                target_bytes)
+
+    @staticmethod
+    def _pack_lines(lines: Iterable[str], target_bytes: int) -> Iterable[str]:
         buffered: list[str] = []
         buffered_bytes = 0
-        for transaction in self.transactions:
-            line = transaction._protocol_line_unchecked() + "\n"
+        for line in lines:
             line_bytes = len(line)
             if buffered and buffered_bytes + line_bytes > target_bytes:
                 yield "".join(buffered)
