@@ -842,7 +842,7 @@ class ResolvedSystemConfig:
         }
         if (
             not isinstance(values, dict)
-            or set(values) != required_values
+            or not required_values <= set(values) <= required_values | {"hbf-mapping-organization"}
             or not all(isinstance(value, str) for value in values.values())
         ):
             raise SimulationSessionError("invalid HBFSim resolved geometry values")
