@@ -96,3 +96,15 @@ prefetch overlaps aggregate compute; covered layer activations precede that comp
 This does not qualify operator-level overlap, real latency or HBF/endurance ranking.
 Traffic is unchanged by enabling compute. Greater compute dominance shrinks relative
 memory-model differences at this specific rate; other rates/shapes can differ.
+
+## B1 chunking and linear sensitivity follow-up
+
+[scope-evidence.json](../examples/coarse-coverage/scope-evidence.json) records
+nine full8BW8 P16+D1 native software cases: original/enhanced/cache40 with
+memory-only/roofline/linear timing and four prefill chunks plus one decode.
+All cases and an installed-wheel chunked linear/cache smoke passed. Across
+the five catalog models,37 targeted tests pass;60 canonical non-chunked
+batch hashes exactly match the prior implementation. Existing CI commands
+plus targeted tests report79 methods,71passed and8backend-dependent skips
+on local macOS/Python3.12. These are software/approximation checks, not
+hardware traffic or calibrated inference timing evidence.

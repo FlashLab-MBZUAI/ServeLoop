@@ -734,6 +734,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     model='layer-aggregate roofline', peak_tflops=timing.peak_tflops,
                     efficiency=timing.efficiency, calibrated=False,
                     overlap='next-layer weight/KV prefetch; activations precede aggregate compute')
+            elif timing.timing_model == 'linear':
+                input_artifacts['coarse_coverage']['compute'] = dict(
+                    model='layer-aggregate linear sensitivity',provider=timing.canonical(),
+                    calibrated=False,overlap='next-layer weight/KV prefetch; activations precede aggregate compute')
         if args.coarse_l2_capacity_bytes is not None:
             input_artifacts['coarse_l2']=dict(capacity_bytes=args.coarse_l2_capacity_bytes,
                 sector_bytes=32,model='fully_associative_sector_lru_range',

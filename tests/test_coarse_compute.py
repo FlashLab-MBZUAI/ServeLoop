@@ -72,4 +72,4 @@ class CoarseComputeTests(unittest.TestCase):
         from types import SimpleNamespace
         old,m,kw,bs=setup(ROOT/'models/llama31-8b-w8-kv-bf16.json')
         with self.assertRaisesRegex(HBServeError,'memory_only or roofline'):
-            CatalogCoverageCompiler(**kw,timing=SimpleNamespace(timing_model='linear'))
+            CatalogCoverageCompiler(**kw,timing=SimpleNamespace(timing_model='gpu_calibrated'))

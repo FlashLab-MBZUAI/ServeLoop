@@ -26,9 +26,8 @@ def build_profile(model, request_digest, phase, tokens, context):
         raise HBServeError('model-derived coverage needs a public descriptor or model JSON imported with --coverage-descriptor')
     if (phase not in ('prefill', 'decode') or type(tokens) is not int or tokens <= 0
             or type(context) is not int or context < 0
-            or (phase == 'prefill' and context != 0)
             or (phase == 'decode' and (tokens != 1 or context == 0))):
-        raise HBServeError('model-derived coverage supports unchunked B1 prefill and single-token decode')
+        raise HBServeError('model-derived coverage supports B1 full/chunked prefill and single-token decode')
     # Preserve the established dense16 numerical path when already qualified.
     if model.structure is not None and not any(l.is_moe for l in model.layers):
         return dense_profile(model, request_digest, phase, tokens, context)
@@ -156,6 +155,8 @@ def build_profile(model, request_digest, phase, tokens, context):
 
 class CatalogCoverageCompiler(CoarseCoverageCompiler):
     supports_roofline = True
+    supports_linear = True
+    supports_chunked_prefill = True
 
     def __init__(self, **kwargs):
         models=kwargs['models']

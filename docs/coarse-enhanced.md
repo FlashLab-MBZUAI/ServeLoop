@@ -39,10 +39,9 @@ Omit all coverage options to keep the original compiler/default behavior.
 ## Dense16 policy scope
 
 Uniform dense BF16/FP16 SwiGLU/RMSNorm models with explicit hidden/intermediate
-sizes, query/KV heads, head and rotary dimensions. B1 unchunked prefill from
-context zero, followed by single-token output-emitting decode forwards;
-`memory_only` or layer-aggregate `roofline`. Analytic coverage rejects unsupported quantization, MoE,
-sliding-window attention, batching/chunking and mixed KV precision.
+sizes, query/KV heads, head and rotary dimensions. B1 full or chunked prefill, followed by single-token output-emitting decode
+forwards; `memory_only`, layer-aggregate `roofline`, or `linear` sensitivity timing. Analytic coverage rejects unsupported quantization, MoE,
+sliding-window attention, multi-request batches and mixed KV precision.
 A model structure does not identify framework fusion: fused attention, RoPE,
 residual normalization and last-token logits are declared assumptions.
 Instruction repeats, internal attention/GEMM scratch and compute are omitted.
@@ -109,13 +108,14 @@ attention without external expanded-context K/V; MoE uses packed top-k copies
 without expert-capacity padding, token drops or network traffic. Matrix weight
 dtype alone does not identify a backend's activation/fusion implementation.
 These assumptions are recorded in the generated profile, not presented as
-hardware-qualified kernel traffic. Scope remains B1 full prefill/single-token
+hardware-qualified kernel traffic. Scope remains B1 full/chunked prefill and single-token
 decode, one model; scheduler/batch support is unchanged. Model-derived policies also support the layer-aggregate roofline described below.
 
 ## Compute-aware model-derived simulation
 
 Both `dense-16bit-swiglu` (including its compatibility alias) and `model-derived`
-now accept `--timing roofline` as well as `memory_only`. For example:
+accept `--timing roofline` as well as `memory_only`, and linear sensitivity
+timing through the original `--run-config` interface. For example:
 
 ```sh
 python -m hbserve run --model models/llama31-8b-w8-kv-bf16.json \
@@ -126,8 +126,8 @@ python -m hbserve run --model models/llama31-8b-w8-kv-bf16.json \
 ```
 
 MoE uses the same original router input. Finite-cache options are unchanged.
-Captured input-bound profiles still require `memory_only`; `gpu_calibrated` and
-linear timing are not admitted by the enhanced providers in this stage.
+Captured input-bound profiles still require output-emitting covered shapes and
+`memory_only`. Model-derived providers continue to reject `gpu_calibrated`.
 
 Compute durations come from the original model FLOP ledger divided by
 `peak_tflops * efficiency`; no memory service time is included in that formula.
@@ -150,3 +150,57 @@ point,not a hardware measurement or an FP8/W8 performance guarantee. One fixed
 rate applies to both phases in a run; precision/shape-dependent throughput and
 real kernel overlap require separate qualification. `memory_only` remains the
 unchanged reference for isolating device traffic effects.
+
+## B1 chunked prefill and linear sensitivity
+
+Set `scheduler.max_batch_requests` to1 in the original run-config format, then
+choose `prefill_chunk_tokens` and `max_batch_tokens`. Each prefill chunk reads
+existing KV through the original compiler and covers newly computed QKV and
+intermediates. Non-emitting chunks retain final normalization but omit token
+selection, LM-head and logits accesses. Only the output-emitting chunk includes
+the head. Existing single-request cache options also apply: temporary workspace
+is rebound each chunk and dirty data drains only at the request's last forward.
+
+The original linear provider's fixed/per-token layer costs and emitting-request
+tail cost are reused unchanged. MoE nonzero layer costs require an explicit
+`moe_routing_fraction`, as in the original compiler. Linear results remain
+uncalibrated sensitivity results, not measured inference timing.
+
+```json
+{
+  "schema": {"name": "hbserve.run_config", "version": 2},
+  "scheduler": {"max_batch_requests": 1, "max_batch_tokens": 8, "prefill_chunk_tokens": 8},
+  "timing": {"type": "linear", "prefetch_depth": 1,
+    "fixed_ns_per_layer": 100, "ns_per_token_per_layer": 10,
+    "tail_fixed_ns": 50, "tail_ns_per_output_request": 20, "moe_routing_fraction": 0.2},
+  "compute": null
+}
+```
+
+Pass this JSON with `--run-config /path/to/run.json`; omit CLI timing/prefetch
+overrides. For memory-only or roofline chunking, keep the same scheduler section
+and use the corresponding original timing/compute sections. Batching several
+requests into one forward, mixed-phase batches, multiple models and cache-aware
+KV migration remain outside enhanced coverage scope.
+
+## Current coverage and remaining work
+
+The enhanced generator is opt-in; omitting coverage options retains the original
+compiler and its broader scheduling interfaces. Unsupported enhanced inputs
+raise errors rather than silently claiming complete coverage.
+
+| Area | Current support | Remaining work |
+|---|---|---|
+| Models | Five packaged dense/quantized/MoE GQA/MLA descriptors; parameterized supported dense structures | New architectures, non-SwiGLU/non-RMSNorm rules, other activation/KV precisions and fusion policies |
+| Scheduling | One model; B1 full/chunked prefill and one-token decode; intermediate chunks omit head/logits | Multiple requests in one forward, mixed prefill/decode batches, multiple-model enhancement |
+| Compute | Original memory-only, layer roofline and linear sensitivity providers | GPU-calibrated provider integration, operator-level overlap, precision/shape-dependent throughput |
+| Optional cache | One complete request; HBM-only KV; persistent weight/KV state, per-forward workspace rebinding, final drain | Multi-request lifetimes, KV tier migration and coherence |
+| Validation | Contract tests, default canonical regression, public-backend native runs and installed-wheel smoke | Hosted OS/Python matrix; accuracy qualification for any newly introduced model/runtime assumptions |
+
+The next scheduling extension should first target homogeneous batches without
+the optional cache. It must preserve shared weight reads, request-specific KV,
+output-head selection and original compute budgets while defining buffer
+lifetimes. Mixed batches and stateful-cache migration follow separately. These
+items are future work and are not required to use the current supported scope.
+The current contribution improves workload coverage for HBFSim; native software
+checks do not establish measured hardware traffic or inference accuracy.

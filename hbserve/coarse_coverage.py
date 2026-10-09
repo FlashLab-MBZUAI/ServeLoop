@@ -72,6 +72,8 @@ class CoarseCoverageProfile:
 class CoarseCoverageCompiler(HBServeCompiler):
     # Captured profiles retain their original memory-only qualification.
     supports_roofline = False
+    supports_linear = False
+    supports_chunked_prefill = False
 
     def __init__(self, *, coverage_profile, cache_bound='off', **kwargs):
         super().__init__(**kwargs)
@@ -80,8 +82,9 @@ class CoarseCoverageCompiler(HBServeCompiler):
             raise HBServeError('unsupported coarse cache sensitivity bound')
         self.cache_bound = cache_bound
         if self.timing.timing_model != 'memory_only' and not (
-                self.supports_roofline and self.timing.timing_model == 'roofline'):
-            raise HBServeError('captured coverage requires memory_only; model-derived coverage supports memory_only or roofline')
+                self.supports_roofline and self.timing.timing_model == 'roofline') and not (
+                self.supports_linear and self.timing.timing_model == 'linear'):
+            raise HBServeError('captured coverage requires memory_only; model-derived coverage supports memory_only or roofline or linear')
         if len(self.models) != 1 or next(iter(self.models.values())).digest != self.coverage.model_digest:
             raise HBServeError('model does not match the coarse coverage profile')
         if self.request_trace.digest != self.coverage.request_digest:
@@ -99,7 +102,7 @@ class CoarseCoverageCompiler(HBServeCompiler):
         if phase is None or [s.token_count,s.context_tokens_before] != phase['shape']:
             raise HBServeError('request shape outside coarse coverage profile; no extrapolation')
         # Tail profile is bound to one output-emitting forward of this shape.
-        if not s.emits_output:
+        if not s.emits_output and not (self.supports_chunked_prefill and s.phase == 'prefill'):
             raise HBServeError('coarse profile requires an output-emitting forward')
         base = super().compile(batch)
         model = self.models[batch.model_id]
@@ -157,7 +160,7 @@ class CoarseCoverageCompiler(HBServeCompiler):
                 layer=int(operation.role.split('/')[1])
                 deps=tuple(dict.fromkeys((*deps,*stages(phase['layers'][layer],deps))))
             elif operation.role=='tail/compute':
-                deps=tuple(dict.fromkeys((*deps,*stages(phase['tail'],deps))))
+                deps=tuple(dict.fromkeys((*deps,*stages(phase['tail'] if s.emits_output else phase['tail'][:1],deps))))
             output.append(replace(operation,dependencies=deps))
         audit[output[-1].id]=dict(audit[output[-1].id],coarse_coverage_sha256=coverage.digest,
             coarse_cache_bound=self.cache_bound,
@@ -170,4 +173,10 @@ class CoarseCoverageCompiler(HBServeCompiler):
                 compute_nodes='original durations preserved; MoE routing split counted once',
                 overlap='next-layer weight/KV prefetch; covered layer activations precede aggregate compute',
                 calibrated=False)
+        elif self.timing.timing_model == 'linear':
+            audit[output[-1].id]['coarse_compute'] = dict(
+                model='original layer-aggregate linear sensitivity',
+                provider=self.timing.canonical(), calibrated=False,
+                compute_nodes='original durations and MoE routing split preserved',
+                overlap='next-layer weight/KV prefetch; covered layer activations precede aggregate compute')
         return replace(base,operations=tuple(output),audit=audit)

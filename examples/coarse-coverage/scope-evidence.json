@@ -1,0 +1,107 @@
+{
+  "scope": "B1 model-derived chunked prefill + single-token decode; linear timing reuse",
+  "model": "Llama3.1-8B W8/BF16KV",
+  "placement": "all-HBM",
+  "request": {
+    "prompt_tokens": 16,
+    "actual_decode_forwards": 1,
+    "prefill_chunk_tokens": 5,
+    "total_forwards": 5
+  },
+  "backend_public_commit": "e9ddd1c8980d56f9f6a14e5241fb7903b6b6636c",
+  "linear_parameters": {
+    "fixed_ns_per_layer": 100,
+    "ns_per_token_per_layer": 10,
+    "tail_fixed_ns": 50,
+    "tail_ns_per_output_request": 20,
+    "moe_routing_fraction": 0.2
+  },
+  "roofline_parameters": {
+    "peak_tflops": 200,
+    "efficiency": 0.5
+  },
+  "cache": {
+    "capacity_bytes": 41943040,
+    "initial": "cold",
+    "workspace": "rebound each forward",
+    "final": "drain at request end"
+  },
+  "native_cases": [
+    {
+      "timing": "memory_only",
+      "arm": "original",
+      "host_seconds": 0.6020666249096394,
+      "total_ms": 4.683417,
+      "batches": 5
+    },
+    {
+      "timing": "memory_only",
+      "arm": "enhanced",
+      "host_seconds": 0.7860953330527991,
+      "total_ms": 4.754237,
+      "batches": 5
+    },
+    {
+      "timing": "memory_only",
+      "arm": "cache40",
+      "host_seconds": 1.0534094999311492,
+      "total_ms": 4.794303,
+      "batches": 5
+    },
+    {
+      "timing": "roofline",
+      "arm": "original",
+      "host_seconds": 0.4881690840702504,
+      "total_ms": 5.14070023152,
+      "batches": 5
+    },
+    {
+      "timing": "roofline",
+      "arm": "enhanced",
+      "host_seconds": 0.6808017080184072,
+      "total_ms": 5.06219323152,
+      "batches": 5
+    },
+    {
+      "timing": "roofline",
+      "arm": "cache40",
+      "host_seconds": 0.950970791047439,
+      "total_ms": 6.4082675,
+      "batches": 5
+    },
+    {
+      "timing": "linear",
+      "arm": "original",
+      "host_seconds": 0.5624164999462664,
+      "total_ms": 4.685719,
+      "batches": 5
+    },
+    {
+      "timing": "linear",
+      "arm": "enhanced",
+      "host_seconds": 0.7988344159675762,
+      "total_ms": 4.765548,
+      "batches": 5
+    },
+    {
+      "timing": "linear",
+      "arm": "cache40",
+      "host_seconds": 1.0341544159455225,
+      "total_ms": 4.8051645,
+      "batches": 5
+    }
+  ],
+  "software_validation": {
+    "targeted_tests": 37,
+    "full_local_CI_reported_tests": 79,
+    "passed": 71,
+    "skipped": 8,
+    "unchunked_canonical_matches": 60,
+    "installed_chunked_linear_cache_smokes": 1
+  },
+  "limits": [
+    "Generated and modeled traffic only; no hardware acquisition or timing calibration",
+    "No multi-request/mixed-phase batches, multi-model enhancement, cache KV migration, or gpu_calibrated",
+    "Captured fixed profiles retain original shape/output/memory-only restrictions"
+  ]
+}

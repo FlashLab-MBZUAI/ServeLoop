@@ -39,9 +39,8 @@ def model_geometry(model):
 def build_profile(model, request_digest, phase, tokens, context):
     if (phase not in ('prefill','decode') or type(tokens) is not int or tokens <= 0
             or type(context) is not int or context < 0
-            or (phase == 'prefill' and context != 0)
             or (phase == 'decode' and (tokens != 1 or context == 0))):
-        raise HBServeError('analytic policy supports unchunked B1 prefill and single-token decode only')
+        raise HBServeError('analytic policy supports B1 full/chunked prefill and single-token decode')
     h, widths = model_geometry(model)
     if model.structure is None and (h!=1536 or any(f!=8960 or l.kv_bytes_per_token!=1024
                       for f,l in zip(widths,model.layers))):
@@ -120,6 +119,8 @@ def build_profile(model, request_digest, phase, tokens, context):
 
 class AnalyticCoverageCompiler(CoarseCoverageCompiler):
     supports_roofline = True
+    supports_linear = True
+    supports_chunked_prefill = True
 
     def __init__(self, **kwargs):
         models=kwargs['models']

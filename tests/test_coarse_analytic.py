@@ -57,7 +57,7 @@ class AnalyticTests(unittest.TestCase):
         captured=CoarseCoverageCompiler(models={self.model.model_id:self.model},
             request_trace=self.trace,coverage_profile=profile)
         with self.assertRaises(HBServeError):captured.compile(self.batch(tokens=128))
-        with self.assertRaises(HBServeError):self.compiler().compile(self.batch(context=1))
+        with self.assertRaises(HBServeError):self.compiler().compile(self.batch('unsupported'))
         with self.assertRaises(HBServeError):self.compiler().compile(self.batch('decode',2,16))
         other=replace(self.model,final_norm_bytes=6144)
         with self.assertRaises(HBServeError):AnalyticCoverageCompiler(
