@@ -1,0 +1,343 @@
+{
+  "schema": {
+    "name": "hbserve.model",
+    "version": 2
+  },
+  "model_id": "native",
+  "provenance": {
+    "kind": "checkpoint_manifest",
+    "source": "Hugging Face config; derived dense geometry, modeled compute",
+    "sha256": "7e4ff7db66f936ca0234cb81b2830c1185c6da2eaf0de2a6b65a775cb4e4ae10"
+  },
+  "vocab_size": 151936,
+  "embedding_bytes": 466747392,
+  "final_norm_bytes": 3072,
+  "lm_head_bytes": 466747392,
+  "lm_head_flops_per_token": 466747392,
+  "tie_word_embeddings": true,
+  "layers": [
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    },
+    {
+      "attention_weight_bytes": 11017216,
+      "ffn_weight_bytes": 82578432,
+      "router_weight_bytes": 0,
+      "shared_expert_weight_bytes": 0,
+      "expert_weight_bytes": [],
+      "top_k": 0,
+      "kv_bytes_per_token": 1024,
+      "flops_per_token": 93585408,
+      "attention_flops_per_context_token": 6144
+    }
+  ],
+  "traffic_model": {
+    "weight_reads": "once_per_batch_per_object",
+    "expert_weight_reads": "once_per_unique_expert_per_batch_layer",
+    "attention_kv_reads": "existing_context_once_per_request_per_layer",
+    "kv_writes": "scheduled_input_tokens_once_per_layer",
+    "embedding_reads": "one_row_per_scheduled_input_token",
+    "output_head_reads": "once_per_batch_that_emits_output",
+    "offchip_scratch": "excluded_without_kernel_trace",
+    "output_token_semantics": "first_token_from_final_prefill_v1"
+  },
+  "compute_model": {
+    "linear_flops": "2_x_activated_matrix_parameters_per_token_per_layer",
+    "attention_flops": "4_x_heads_x_head_dim_per_token_per_context_token_causal",
+    "lm_head_flops": "2_x_vocab_x_hidden_per_output_emitting_request"
+  }
+}

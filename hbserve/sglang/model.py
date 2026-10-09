@@ -8,7 +8,7 @@ from typing import Any
 
 from hbserve.compiler import HBServeCompiler
 from hbserve.contracts import (
-    BatchSlice, LayerSpec, ModelSpec, RequestSpec, RequestTrace,
+    BatchSlice, DenseModelStructure, LayerSpec, ModelSpec, RequestSpec, RequestTrace,
     RooflineTimingProvider, ScheduledBatch, TraceProvenance,
 )
 
@@ -24,7 +24,28 @@ def positive_int(value: Any, name: str, minimum: int = 1) -> int:
     return value
 
 
-def dense_model(hf: dict, dtype: str, kv_dtype: str) -> ModelSpec:
+def dense_structure(hf: dict, dtype: str, kv_dtype: str) -> DenseModelStructure:
+    """Read structure from HF config, never reverse-engineer weight byte counts."""
+    h=positive_int(hf.get('hidden_size'),'hidden_size')
+    q=positive_int(hf.get('num_attention_heads'),'num_attention_heads')
+    if 'head_dim' not in hf and h % q:
+        raise ValueError('hidden_size must divide heads when head_dim is absent')
+    d=positive_int(hf.get('head_dim',h//q),'head_dim')
+    if hf.get('hidden_act','silu') not in ('silu','swish'):
+        raise ValueError('analytic dense structure requires SwiGLU/SiLU')
+    fraction=hf.get('partial_rotary_factor',1.0)
+    if type(fraction) not in (int,float) or not 0 < fraction <= 1 or d*fraction != int(d*fraction):
+        raise ValueError('invalid partial_rotary_factor')
+    return DenseModelStructure(hidden_size=h,
+        intermediate_size=positive_int(hf.get('intermediate_size'),'intermediate_size'),
+        num_attention_heads=q,
+        num_key_value_heads=positive_int(hf.get('num_key_value_heads',q),'num_key_value_heads'),
+        head_dim=d,dtype=dtype,kv_dtype=kv_dtype,rotary_dim=int(d*fraction),
+        rope_table_dtype=hf.get('rope_table_dtype','float32'),
+        qk_head_norms=hf.get('model_type')=='qwen3')
+
+
+def dense_model(hf: dict, dtype: str, kv_dtype: str, *, include_structure: bool = False) -> ModelSpec:
     """Derive a dense Llama/Qwen/Mistral ledger, including norms and biases."""
     kind = hf.get("model_type")
     if kind not in {"llama", "qwen2", "qwen3", "mistral"}:
@@ -69,6 +90,7 @@ def dense_model(hf: dict, dtype: str, kv_dtype: str) -> ModelSpec:
         vocab_size=v, embedding_bytes=v * h * b, final_norm_bytes=h * b,
         lm_head_bytes=v * h * b, tie_word_embeddings=bool(hf.get("tie_word_embeddings", False)),
         layers=(layer,) * n, lm_head_flops_per_token=2 * v * h,
+        structure=dense_structure(hf,dtype,kv_dtype) if include_structure else None,
     )
 
 

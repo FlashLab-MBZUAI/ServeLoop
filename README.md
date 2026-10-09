@@ -46,6 +46,14 @@ not claim kernel-level cache behavior or hardware-calibrated end-to-end latency
 unless those are supplied and validated by a future trace/calibration backend.
 Run `hbserve capabilities` to inspect the exact current boundary.
 
+## Optional enhanced coarse inputs
+
+[Enhanced coarse generation](docs/coarse-enhanced.md) adds model-derived
+activation/intermediate footprints without GPU capture. An optional finite
+range-cache transform supports cache-policy sensitivity studies. Both are
+opt-in; the original default remains unchanged. These are workload
+approximations, not hardware-calibrated GPU cache or inference timing.
+
 ## Install
 
 HBServe requires Python 3.10 or newer and has no runtime Python dependencies.

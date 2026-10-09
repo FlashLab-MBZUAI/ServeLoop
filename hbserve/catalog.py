@@ -19,6 +19,7 @@ Usage: ``python -m hbserve model DESCRIPTOR --output model.json``.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -32,6 +33,7 @@ if str(ROOT) not in sys.path:
 
 from hbserve.contracts import (  # noqa: E402
     LayerSpec,
+    DenseModelStructure,
     MODEL_SCHEMA,
     HBServeError,
     ModelSpec,
@@ -195,20 +197,56 @@ def convert_descriptor(path: Path) -> ModelSpec:
     except ValueError as error:
         raise HBServeError(f"catalog derivation failed for {path}: {error}") from error
     schema_label = f"{schema['name']}#v{schema['version']}"
-    return model_from_ledger(
+    model = model_from_ledger(
         ledger,
         provenance_source=f"{artifact['path']}#{schema_label}",
         provenance_sha256=str(artifact["sha256"]),
     )
+    # Attach structure only when the public descriptor declares the supported
+    # unquantized dense precision/geometry. Other catalog workloads stay coarse.
+    a=document['architecture']; p=document['precision']
+    if (document['model']['architecture']=='dense_decoder_transformer'
+            and a['attention']['kind']=='gqa' and p['quantization_scheme']=='none'
+            and p['matrix_weight_dtype'] in ('bfloat16','float16')
+            and p['non_matrix_weight_dtype']==p['matrix_weight_dtype']
+            and p['kv_dtype']==p['matrix_weight_dtype']):
+        model=replace(model,structure=DenseModelStructure(
+            hidden_size=a['hidden_size'],intermediate_size=a['ffn']['dense_intermediate_size'],
+            num_attention_heads=a['num_attention_heads'],
+            num_key_value_heads=a['attention']['num_key_value_heads'],
+            head_dim=a['attention']['head_dim'],dtype=p['matrix_weight_dtype'],kv_dtype=p['kv_dtype'],
+            rotary_dim=a['attention'].get('rotary_dim',a['attention']['head_dim']),
+            rope_table_dtype=a['attention'].get('rope_table_dtype','float32'),
+            qk_head_norms=a['attention']['qk_head_norms']))
+    return model
 
 
-def load_model_any(path: Path) -> ModelSpec:
+def validate_coverage_descriptor(model: ModelSpec, document: Mapping[str, Any]) -> None:
+    """Check explicit coverage geometry against the original capacity ledger."""
+    from hbserve.public_model import derive_public_model_ledger
+    if not isinstance(document, Mapping) or document.get('schema') != PUBLIC_SCHEMA:
+        raise HBServeError('coverage_descriptor requires a public model descriptor')
+    try:
+        ledger = derive_public_model_ledger(document, descriptor_artifact={
+            'path': 'embedded coverage descriptor', 'sha256': model.provenance['sha256']})
+        reference = model_from_ledger(ledger, provenance_source='embedded coverage descriptor',
+                                      provenance_sha256=model.provenance['sha256'] or '0'*64)
+    except (ValueError, KeyError, TypeError) as error:
+        raise HBServeError(f'invalid coverage descriptor: {error}') from error
+    fields = ('model_id', 'vocab_size', 'embedding_bytes', 'final_norm_bytes',
+              'lm_head_bytes', 'tie_word_embeddings', 'layers', 'lm_head_flops_per_token')
+    if any(getattr(model, field) != getattr(reference, field) for field in fields):
+        raise HBServeError('coverage descriptor disagrees with original weight/KV/FLOP ledger')
+
+
+def load_model_any(path: Path, *, include_coverage_descriptor: bool = False) -> ModelSpec:
     """Load a ``hbserve.model`` JSON or convert a catalog descriptor."""
 
     document = load_json_object(path, "model")
     if document.get("schema") == MODEL_SCHEMA:
         return ModelSpec.from_dict(document)
-    return convert_descriptor(path)
+    model = convert_descriptor(path)
+    return replace(model, coverage_descriptor=document) if include_coverage_descriptor else model
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -221,11 +259,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("descriptor", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument('--hf-config',action='store_true',help='input is a dense Hugging Face config.json')
+    parser.add_argument('--dtype',choices=('bfloat16','float16'))
+    parser.add_argument('--kv-dtype',choices=('bfloat16','float16'))
+    parser.add_argument('--coverage-descriptor', action='store_true',
+                        help='retain public architecture/precision for model-derived coarse coverage')
     args = parser.parse_args(argv)
+    if not args.hf_config and (args.dtype is not None or args.kv_dtype is not None):
+        parser.error('--dtype/--kv-dtype require --hf-config; catalog precision is explicit')
     try:
-        model = convert_descriptor(args.descriptor)
+        if args.hf_config:
+            if args.coverage_descriptor:
+                raise HBServeError('--coverage-descriptor applies to public catalog descriptors')
+            from hbserve.sglang.model import dense_model
+            dtype=args.dtype or 'bfloat16'
+            model=dense_model(load_json_object(args.descriptor,'HF config'),dtype,
+                              args.kv_dtype or dtype,include_structure=True)
+        else:
+            model = load_model_any(args.descriptor, include_coverage_descriptor=args.coverage_descriptor)
         write_json_atomic(args.output, model.canonical())
-    except (OSError, HBServeError) as error:
+    except (OSError, HBServeError, ValueError) as error:
         print(f"hbserve model conversion failed: {error}", file=sys.stderr)
         return 2
     print(

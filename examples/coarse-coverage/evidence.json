@@ -1,0 +1,345 @@
+{
+  "workload": {
+    "model": "Qwen2.5-1.5B",
+    "framework": "SGLang0.4.10",
+    "precision": "BF16",
+    "batch": 1,
+    "TP": 1,
+    "GPU": "RTX4000Ada"
+  },
+  "P16_D1": {
+    "hardware_window": "natural model.forward; preparation/sampling excluded; one clean acquisition",
+    "rows": [
+      {
+        "method": "Hardware: natural model.forward",
+        "phases": {
+          "prefill": {
+            "read": 3095564672,
+            "write": 96456448
+          },
+          "decode": {
+            "read": 3057792000,
+            "write": 1884800
+          }
+        },
+        "total": {
+          "read": 6153356672,
+          "write": 98341248
+        },
+        "errors_percent": {
+          "total": {
+            "read": 0.0,
+            "write": 0.0
+          }
+        }
+      },
+      {
+        "method": "Original coarse",
+        "phases": {
+          "prefill": {
+            "read": 3087477760,
+            "write": 458752
+          },
+          "decode": {
+            "read": 3087890432,
+            "write": 28672
+          }
+        },
+        "total": {
+          "read": 6175368192,
+          "write": 487424
+        },
+        "errors_percent": {
+          "total": {
+            "read": 0.35771565298921004,
+            "write": -99.50435446985583
+          }
+        }
+      },
+      {
+        "method": "Enhanced coarse: no cache",
+        "phases": {
+          "prefill": {
+            "read": 3126146432,
+            "write": 39089408
+          },
+          "decode": {
+            "read": 3090569192,
+            "write": 3271936
+          }
+        },
+        "total": {
+          "read": 6216715624,
+          "write": 42361344
+        },
+        "errors_percent": {
+          "total": {
+            "read": 1.0296648703675304,
+            "write": -56.924134214770184
+          }
+        }
+      },
+      {
+        "method": "Enhanced coarse: 40MiB / fetch",
+        "phases": {
+          "prefill": {
+            "read": 3121115008,
+            "write": 32391168
+          },
+          "decode": {
+            "read": 3090822304,
+            "write": 3929600
+          }
+        },
+        "total": {
+          "read": 6211937312,
+          "write": 36320768
+        },
+        "errors_percent": {
+          "total": {
+            "read": 0.9520111237263817,
+            "write": -63.06659846334266
+          }
+        }
+      }
+    ]
+  },
+  "P512_D32": {
+    "hardware_window": "natural full request includes preparation/sampling;33forwards",
+    "traffic_rows": [
+      {
+        "method": "Hardware: full request",
+        "total": {
+          "read": 102315985792,
+          "write": 1248159872
+        },
+        "phases": {
+          "prefill": {
+            "read": 3450949760,
+            "write": 1232826112
+          },
+          "decode": {
+            "read": 98865036032,
+            "write": 15333760
+          }
+        }
+      },
+      {
+        "method": "original_coarse",
+        "phases": {
+          "prefill": {
+            "read": 3089001472,
+            "write": 14680064
+          },
+          "decode": {
+            "read": 99281797120,
+            "write": 917504
+          }
+        },
+        "total": {
+          "read": 102370798592,
+          "write": 15597568
+        }
+      },
+      {
+        "method": "enhanced_coarse_no_cache",
+        "phases": {
+          "prefill": {
+            "read": 4316788480,
+            "write": 1222505728
+          },
+          "decode": {
+            "read": 99367517440,
+            "write": 104701952
+          }
+        },
+        "total": {
+          "read": 103684305920,
+          "write": 1327207680
+        }
+      },
+      {
+        "method": "historical_template_cache",
+        "phases": {
+          "prefill": {
+            "read": 4560134464,
+            "write": 1118464768
+          },
+          "decode": {
+            "read": 99590646080,
+            "write": 3926528
+          }
+        },
+        "total": {
+          "read": 104150780544,
+          "write": 1122391296
+        }
+      },
+      {
+        "method": "enhanced_coarse_cache40MiB_fetch",
+        "phases": {
+          "prefill": {
+            "read": 4137038080,
+            "write": 1036517376
+          },
+          "decode": {
+            "read": 99375617024,
+            "write": 97391872
+          }
+        },
+        "total": {
+          "read": 103512655104,
+          "write": 1133909248
+        }
+      }
+    ],
+    "timing_rows": [
+      {
+        "placement": "all-hbm",
+        "arm": "nocache",
+        "total_ms": 13.859476,
+        "phases": {
+          "prefill": {
+            "forwards": 1,
+            "simulated_ns": 743954.0,
+            "traffic": {
+              "HBM_read_bytes": 4316788480,
+              "HBM_write_bytes": 1222505728
+            }
+          },
+          "decode": {
+            "forwards": 32,
+            "simulated_ns": 13115522.0,
+            "traffic": {
+              "HBM_read_bytes": 99367517440,
+              "HBM_write_bytes": 104701952
+            }
+          }
+        },
+        "application_total": {
+          "read": 103684305920,
+          "write": 1327207680
+        }
+      },
+      {
+        "placement": "all-hbm",
+        "arm": "cache40",
+        "total_ms": 14.0901335,
+        "phases": {
+          "prefill": {
+            "forwards": 1,
+            "simulated_ns": 697057.0,
+            "traffic": {
+              "HBM_read_bytes": 4137028864,
+              "HBM_write_bytes": 1036517376
+            }
+          },
+          "decode": {
+            "forwards": 32,
+            "simulated_ns": 13393076.5,
+            "traffic": {
+              "HBM_read_bytes": 99375604736,
+              "HBM_write_bytes": 97391872
+            }
+          }
+        },
+        "application_total": {
+          "read": 103512633600,
+          "write": 1133909248
+        }
+      },
+      {
+        "placement": "weights-hbf-kv-hbm",
+        "arm": "nocache",
+        "total_ms": 97.75008,
+        "phases": {
+          "prefill": {
+            "forwards": 1,
+            "simulated_ns": 2986722.0,
+            "traffic": {
+              "HBF_LOGICAL_read_bytes": 3089001472,
+              "HBF_LOGICAL_write_bytes": 0,
+              "HBM_read_bytes": 1227787008,
+              "HBM_write_bytes": 1222505728
+            }
+          },
+          "decode": {
+            "forwards": 32,
+            "simulated_ns": 94763358.0,
+            "traffic": {
+              "HBF_LOGICAL_read_bytes": 98797813760,
+              "HBF_LOGICAL_write_bytes": 0,
+              "HBM_read_bytes": 569703680,
+              "HBM_write_bytes": 104701952
+            }
+          }
+        },
+        "application_total": {
+          "read": 103684305920,
+          "write": 1327207680
+        }
+      },
+      {
+        "placement": "weights-hbf-kv-hbm",
+        "arm": "cache40",
+        "total_ms": 102.125739,
+        "phases": {
+          "prefill": {
+            "forwards": 1,
+            "simulated_ns": 3179261.0,
+            "traffic": {
+              "HBF_LOGICAL_read_bytes": 3088992256,
+              "HBF_LOGICAL_write_bytes": 0,
+              "HBM_read_bytes": 1048036608,
+              "HBM_write_bytes": 1036517376
+            }
+          },
+          "decode": {
+            "forwards": 32,
+            "simulated_ns": 98946478.0,
+            "traffic": {
+              "HBF_LOGICAL_read_bytes": 98797801472,
+              "HBF_LOGICAL_write_bytes": 0,
+              "HBM_read_bytes": 577803264,
+              "HBM_write_bytes": 97391872
+            }
+          }
+        },
+        "application_total": {
+          "read": 103512633600,
+          "write": 1133909248
+        }
+      }
+    ],
+    "changes_percent": {
+      "all-hbm": {
+        "prefill": -6.303749963035354,
+        "decode": 2.116229151992588,
+        "total": 1.6642584467118304
+      },
+      "weights-hbf-kv-hbm": {
+        "prefill": 6.446498870668238,
+        "decode": 4.414280042714402,
+        "total": 4.4763738300776845
+      }
+    },
+    "placement_ratios": {
+      "nocache": 7.052941972697957,
+      "cache40": 7.248032036034292
+    }
+  },
+  "identities": {
+    "ServeLoop_research_commit": "c23f0c3581a48723594625ee527bccbc01870746",
+    "HBFSim_research_commit": "0639625e267a8561e0768a4f5f63d1330556b447",
+    "HBFSim_binary_SHA256": "6c5a67081cbd4d6807541b2ce3747785b8256da42a9c164a13500de18c286ec9",
+    "configuration_SHA256": "4eb66cb697bc4c41e44c114c72a060ff92d79735c220b79daed8f3f27644f98f"
+  },
+  "limits": [
+    "Hardware counters are measured GPU DRAM totals; modeled output is not measured postL2 addresses",
+    "Hardware natural initial state/no forced drain differs from cold modeled state/final drain",
+    "P512 coarse token addresses are surrogate, not GPU token-matched",
+    "Historical detailed traffic is a different generator/cache version",
+    "No HBF writes in two-placement screen; no endurance validation",
+    "Memory-only simulated time is not inference latency"
+  ]
+}

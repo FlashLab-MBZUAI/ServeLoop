@@ -384,6 +384,49 @@ class MemoryObject:
 
 
 @dataclass(frozen=True)
+class DenseModelStructure:
+    """Explicit geometry; execution/fusion policy is deliberately separate."""
+
+    hidden_size: int
+    intermediate_size: int
+    num_attention_heads: int
+    num_key_value_heads: int
+    head_dim: int
+    dtype: str
+    kv_dtype: str
+    rotary_dim: int
+    rope_table_dtype: str = 'float32'
+    mlp: str = 'swiglu'
+    norm: str = 'rmsnorm'
+    qk_head_norms: bool = False
+
+    def __post_init__(self):
+        for name in ('hidden_size','intermediate_size','num_attention_heads',
+                     'num_key_value_heads','head_dim','rotary_dim'):
+            _integer(getattr(self,name),f'structure {name}',minimum=1)
+        if self.num_attention_heads % self.num_key_value_heads:
+            raise HBServeError('structure query heads must be divisible by KV heads')
+        if self.rotary_dim > self.head_dim or self.rotary_dim % 2:
+            raise HBServeError('structure rotary_dim must be even and <= head_dim')
+        if self.dtype not in ('bfloat16','float16') or self.kv_dtype != self.dtype:
+            raise HBServeError('dense structure currently requires homogeneous BF16 or FP16')
+        if self.rope_table_dtype not in ('float32','bfloat16','float16'):
+            raise HBServeError('unsupported RoPE table dtype')
+        if self.mlp != 'swiglu' or self.norm != 'rmsnorm' or type(self.qk_head_norms) is not bool:
+            raise HBServeError('structure currently supports SwiGLU/RMSNorm only')
+
+    def canonical(self):
+        return dict(self.__dict__)
+
+    @classmethod
+    def from_dict(cls,value):
+        if not isinstance(value,Mapping):
+            raise HBServeError('model structure must be an object')
+        _exact_keys(value,set(cls.__dataclass_fields__),'model structure')
+        return cls(**value)
+
+
+@dataclass(frozen=True)
 class ModelSpec:
     """A model's explicit memory objects, without inferred parameter sizes."""
 
@@ -396,6 +439,8 @@ class ModelSpec:
     tie_word_embeddings: bool
     layers: tuple[LayerSpec, ...]
     lm_head_flops_per_token: int
+    structure: DenseModelStructure | None = None
+    coverage_descriptor: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         _entity_identifier(self.model_id, "model id")
@@ -441,6 +486,22 @@ class ModelSpec:
             raise HBServeError("model must contain at least one layer")
         if not all(isinstance(layer, LayerSpec) for layer in self.layers):
             raise HBServeError("model layers must be LayerSpec values")
+        if self.structure is not None:
+            g=self.structure
+            if not isinstance(g,DenseModelStructure):
+                raise HBServeError('model structure must be DenseModelStructure')
+            if self.embedding_bytes != self.vocab_size*g.hidden_size*2:
+                raise HBServeError('structure disagrees with embedding payload')
+            if any(l.is_moe or l.kv_bytes_per_token != 4*g.num_key_value_heads*g.head_dim
+                   or l.ffn_weight_bytes < 6*g.hidden_size*g.intermediate_size
+                   or l.attention_weight_bytes < 4*g.hidden_size*g.head_dim*(g.num_attention_heads+g.num_key_value_heads)
+                   for l in self.layers):
+                raise HBServeError('structure disagrees with dense layer weight/KV payloads')
+            if self.final_norm_bytes < 2*g.hidden_size or self.lm_head_bytes < self.embedding_bytes:
+                raise HBServeError('structure disagrees with norm/head payloads')
+        if self.coverage_descriptor is not None:
+            from hbserve.catalog import validate_coverage_descriptor
+            validate_coverage_descriptor(self, self.coverage_descriptor)
         # Force checked aggregate accounting during construction.
         _ = self.weight_footprint_bytes
 
@@ -591,7 +652,7 @@ class ModelSpec:
         )
 
     def canonical(self) -> dict[str, Any]:
-        return {
+        document = {
             "schema": MODEL_SCHEMA,
             "model_id": self.model_id,
             "provenance": dict(self.provenance),
@@ -605,6 +666,11 @@ class ModelSpec:
             "traffic_model": dict(TRAFFIC_MODEL),
             "compute_model": dict(COMPUTE_MODEL),
         }
+        if self.structure is not None:
+            document['structure']=self.structure.canonical()
+        if self.coverage_descriptor is not None:
+            document['coverage_descriptor']=dict(self.coverage_descriptor)
+        return document
 
     @cached_property
     def digest(self) -> str:
@@ -627,7 +693,8 @@ class ModelSpec:
                 "layers",
                 "traffic_model",
                 "compute_model",
-            },
+            } | ({'structure'} if 'structure' in value else set())
+              | ({'coverage_descriptor'} if 'coverage_descriptor' in value else set()),
             "model descriptor",
         )
         if value.get("schema") != MODEL_SCHEMA:
@@ -736,6 +803,8 @@ class ModelSpec:
             lm_head_flops_per_token=_integer(
                 value.get("lm_head_flops_per_token"), "lm_head_flops_per_token"
             ),
+            structure=DenseModelStructure.from_dict(value['structure']) if 'structure' in value else None,
+            coverage_descriptor=value.get('coverage_descriptor'),
         )
 
 
@@ -1676,6 +1745,8 @@ class CanonicalServingBatch:
                 "hardware_cache_filtering_validated": False,
                 "scope": "KV and supported small-M QKV input/packed weights/scales; other tensors retain explicit footprint estimates",
             }} if application_kernels else {}),
+            **({'coarse_l2': dict(self.audit[self.operations[-1].id]['coarse_l2'])}
+               if 'coarse_l2' in self.audit[self.operations[-1].id] else {}),
         }
 
     @cached_property

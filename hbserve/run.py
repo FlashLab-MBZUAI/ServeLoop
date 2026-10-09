@@ -371,20 +371,59 @@ def run_experiment(
     timing: TimingProvider,
     prefetch_depth: int,
     input_artifacts: Mapping[str, Any],
+    coarse_coverage_profile: Path | None = None,
+    coarse_cache_bound: str = 'off',
+    coarse_coverage_policy: str | None = None,
+    coarse_l2_capacity_bytes: int | None = None,
+    coarse_l2_write_policy: str = 'write-allocate-fetch',
 ) -> dict[str, Any]:
     """Run the closed loop and return the receipted experiment document."""
 
+    if coarse_coverage_profile is not None and coarse_coverage_policy is not None:
+        raise HBServeError('choose a captured profile or an analytic policy')
+    if coarse_cache_bound != 'off' and coarse_coverage_profile is None and coarse_coverage_policy is None:
+        raise HBServeError('coarse cache sensitivity requires a coverage profile or policy')
+    if coarse_l2_capacity_bytes is None and coarse_l2_write_policy!='write-allocate-fetch':
+        raise HBServeError('coarse L2 write policy requires capacity')
+    if coarse_l2_capacity_bytes is not None:
+        if coarse_coverage_profile is None and coarse_coverage_policy is None:
+            raise HBServeError('coarse L2 requires a coverage profile or policy')
+        if coarse_cache_bound!='off':
+            raise HBServeError('coarse L2 cannot combine with ideal-temporaries')
+        if placement_spec.kv_placement.hot!='hbm' or placement_spec.kv_placement.cold is not None:
+            raise HBServeError('coarse L2 currently requires HBM-only KV without migration')
     try:
         system = ResolvedSystemConfig.load(list(system_config_paths))
     except SimulationSessionError as error:
         raise HBServeError(str(error)) from error
-    compiler = HBServeCompiler(
+    compiler_type = HBServeCompiler
+    compiler_options = {}
+    if coarse_coverage_profile is not None:
+        from hbserve.coarse_coverage import CoarseCoverageCompiler, CoarseCoverageProfile
+        compiler_type = CoarseCoverageCompiler
+        compiler_options = dict(coverage_profile=CoarseCoverageProfile.load(coarse_coverage_profile),
+                                cache_bound=coarse_cache_bound)
+    if coarse_coverage_policy is not None:
+        from hbserve.coarse_analytic import AnalyticCoverageCompiler, POLICY_ALIASES
+        if coarse_coverage_policy == 'model-derived':
+            from hbserve.coarse_catalog import CatalogCoverageCompiler
+            compiler_type = CatalogCoverageCompiler
+        elif coarse_coverage_policy in POLICY_ALIASES:
+            compiler_type = AnalyticCoverageCompiler
+        else:
+            raise HBServeError('unsupported analytic coverage policy')
+        compiler_options = dict(cache_bound=coarse_cache_bound)
+    compiler = compiler_type(
         models=models,
         request_trace=request_trace,
         router=router,
         timing=timing,
         prefetch_depth=prefetch_depth,
+        **compiler_options,
     )
+    if coarse_l2_capacity_bytes is not None:
+        from hbserve.coarse_l2 import CoarseL2Compiler
+        compiler=CoarseL2Compiler(compiler,coarse_l2_capacity_bytes,write_policy=coarse_l2_write_policy)
     placement = HBServePlacement(
         models=models,
         spec=placement_spec,
@@ -424,6 +463,8 @@ def run_experiment(
         "hbserve": hbserve_result,
         "final_execution": final_execution,
     }
+    if coarse_l2_capacity_bytes is not None:
+        experiment['coarse_l2']=compiler.cache_receipt()
     experiment["experiment_sha256"] = canonical_sha256(experiment)
     return experiment
 
@@ -467,6 +508,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="overlay config applied after --system (repeatable)",
     )
     serving.add_argument("--router", type=Path, help="MoE router trace or synthetic router")
+    serving.add_argument('--coarse-coverage-profile',type=Path,
+        help='opt-in digest-bound operator coverage profile; memory_only, covered shapes only')
+    serving.add_argument('--coarse-coverage-policy',choices=('dense-16bit-swiglu','dense-bf16-swiglu','model-derived'),
+        help='model-derived B1 tensor footprints with explicit fusion/attention assumptions')
+    serving.add_argument('--coarse-cache-bound',choices=('off','ideal-temporaries'),
+        help='temporary-traffic sensitivity bound with a coverage profile or policy; not a GPU cache simulator')
+    serving.add_argument('--coarse-l2-write-policy',choices=('write-allocate-fetch','full-store-no-fetch'),
+        help='default write-allocate-fetch; optional complete-sector stores skip fetch, partial stores still fetch')
+    serving.add_argument('--coarse-l2-capacity-bytes',type=int,
+        help='opt-in fully associative32B-sector range LRU; write-back/allocate, cold start, final drain')
     serving.add_argument(
         "--placement",
         help="preset (" + ", ".join(sorted(PLACEMENT_PRESETS)) + ") or placement JSON; "
@@ -524,6 +575,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "router",
         "placement",
         "run_config",
+        "coarse_coverage_profile",
+        "coarse_coverage_policy",
+        "coarse_cache_bound",
+        "coarse_l2_capacity_bytes",
+        "coarse_l2_write_policy",
         "prefix_cache_bytes",
         "prefix_cache_ttl_ns",
         *timing_defaults,
@@ -548,6 +604,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(
             "--topologies, --preflight-only, and --allow-dirty require --experiment"
         )
+    if args.coarse_coverage_profile is not None and args.coarse_coverage_policy is not None:
+        parser.error('choose --coarse-coverage-profile or --coarse-coverage-policy')
+    if args.coarse_cache_bound is not None and args.coarse_coverage_profile is None and args.coarse_coverage_policy is None:
+        parser.error('--coarse-cache-bound requires a coverage profile or policy')
+    if args.coarse_l2_write_policy is not None and args.coarse_l2_capacity_bytes is None:
+        parser.error('--coarse-l2-write-policy requires --coarse-l2-capacity-bytes')
+    if args.coarse_l2_capacity_bytes is not None:
+        if args.coarse_coverage_profile is None and args.coarse_coverage_policy is None:
+            parser.error('--coarse-l2-capacity-bytes requires a coverage profile or policy')
+        if args.coarse_cache_bound not in (None,'off'):
+            parser.error('coarse L2 cannot combine with ideal-temporaries')
+        if args.coarse_l2_capacity_bytes<32 or args.coarse_l2_capacity_bytes%32:
+            parser.error('coarse L2 capacity must be a positive multiple of32 bytes')
     missing = [
         name for name in ("model", "system", "placement")
         if getattr(args, name) is None
@@ -568,7 +637,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         models = {}
         model_artifacts = []
         for path in args.model:
-            model = load_model_any(path)
+            model = load_model_any(path, include_coverage_descriptor=args.coarse_coverage_policy == 'model-derived')
             if model.model_id in models:
                 raise HBServeError(f"duplicate model id {model.model_id}")
             models[model.model_id] = model
@@ -648,6 +717,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         }
         output_directory = create_run_directory(args.out)
+        if args.coarse_coverage_profile is not None:
+            input_artifacts['coarse_coverage'] = dict(**_artifact(args.coarse_coverage_profile),
+                cache_bound=args.coarse_cache_bound or 'off',
+                traffic_domain='tensor/kernel coverage; not hardware or modeled GPU-cache misses')
+        if args.coarse_coverage_policy is not None:
+            if args.coarse_coverage_policy == 'model-derived':
+                from hbserve.coarse_catalog import ASSUMPTIONS
+            else:
+                from hbserve.coarse_analytic import ASSUMPTIONS
+            input_artifacts['coarse_coverage'] = dict(policy=args.coarse_coverage_policy,
+                assumptions=ASSUMPTIONS,cache_bound=args.coarse_cache_bound or 'off',
+                traffic_domain='analytic tensor footprints; not GPU-cache misses or captured kernel coverage')
+            if timing.timing_model == 'roofline':
+                input_artifacts['coarse_coverage']['compute'] = dict(
+                    model='layer-aggregate roofline', peak_tflops=timing.peak_tflops,
+                    efficiency=timing.efficiency, calibrated=False,
+                    overlap='next-layer weight/KV prefetch; activations precede aggregate compute')
+            elif timing.timing_model == 'linear':
+                input_artifacts['coarse_coverage']['compute'] = dict(
+                    model='layer-aggregate linear sensitivity',provider=timing.canonical(),
+                    calibrated=False,overlap='next-layer weight/KV prefetch; activations precede aggregate compute')
+        if args.coarse_l2_capacity_bytes is not None:
+            input_artifacts['coarse_l2']=dict(capacity_bytes=args.coarse_l2_capacity_bytes,
+                sector_bytes=32,model='fully_associative_sector_lru_range',
+                initial='cold',write_policy=args.coarse_l2_write_policy or 'write-allocate-fetch',final='dirty drain',
+                traffic_domain='modeled post-L2 demand; not measured hardware traffic')
         for model in models.values():
             write_json_atomic(
                 output_directory / f"model-{model.model_id}.json", model.canonical()
@@ -666,12 +761,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             timing=timing,
             prefetch_depth=prefetch_depth,
             input_artifacts=input_artifacts,
+            coarse_coverage_profile=args.coarse_coverage_profile,
+            coarse_coverage_policy=args.coarse_coverage_policy,
+            coarse_cache_bound=args.coarse_cache_bound or 'off',
+            coarse_l2_capacity_bytes=args.coarse_l2_capacity_bytes,
+            coarse_l2_write_policy=args.coarse_l2_write_policy or 'write-allocate-fetch',
         )
         result_path = output_directory / "result.json"
         write_json_atomic(result_path, experiment)
         lines = headline_lines(
             experiment, result_path=result_path, placement_label=placement_label
         )
+        if args.coarse_coverage_policy is not None:
+            lines.append('analytic coverage: assumed tensor footprints; attention scratch/compute unmodeled')
+        if args.coarse_coverage_profile is not None:
+            lines.append('coarse coverage: tensor/kernel footprints' if args.coarse_l2_capacity_bytes is not None else
+                         'coarse coverage: tensor/kernel footprints; GPU cache misses are not modeled')
+        if args.coarse_cache_bound == 'ideal-temporaries':
+            lines.append('sensitivity bound: temporary traffic ideally on-chip; weight/KV traffic unchanged')
+        if args.coarse_l2_capacity_bytes is not None:
+            lines.append('coarse L2: fully associative range LRU; modeled post-cache traffic, not hardware validated')
+        elif args.coarse_coverage_policy is not None:
+            lines.append('GPU cache misses are not modeled')
         (output_directory / "headline.txt").write_text(
             "\n".join(lines) + "\n", encoding="utf-8"
         )
