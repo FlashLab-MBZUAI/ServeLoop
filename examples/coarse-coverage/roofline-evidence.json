@@ -1,0 +1,96 @@
+{
+  "scope": "5complete catalog models,P512+D1,allHBM,roofline peak200TFLOPS efficiency0.5,original/enhanced/cache40,prefetch1",
+  "capacity_bytes": 1099511627776,
+  "effective_TFLOPS": 100,
+  "results": [
+    {
+      "model": "llama31-8b-w8-kv-bf16.json",
+      "memory_only": {
+        "original_ms": 1.973892,
+        "enhanced_ms": 2.7611595,
+        "enhanced_change_percent": 39.88402101026804
+      },
+      "enhanced_change_percent": 1.9132938924214304,
+      "cached_change_percent": 1.7657090919748653,
+      "roofline_times_ms": {
+        "original": 73.32579723152,
+        "enhanced": 74.72873523151999,
+        "cache40": 74.6205175
+      },
+      "compute_budget_ms": 72.32008224768003
+    },
+    {
+      "model": "llama31-70b-w8a16-kv-bf16.json",
+      "memory_only": {
+        "original_ms": 18.14778,
+        "enhanced_ms": 21.9082235,
+        "enhanced_change_percent": 20.72123146743017
+      },
+      "enhanced_change_percent": 1.0443346656274333,
+      "cached_change_percent": 1.469295629950751,
+      "roofline_times_ms": {
+        "original": 714.21525546304,
+        "enhanced": 721.67405296304,
+        "cache40": 724.709189
+      },
+      "compute_budget_ms": 705.8058431692806
+    },
+    {
+      "model": "qwen3-8b-bf16-kv-bf16.json",
+      "memory_only": {
+        "original_ms": 3.962952,
+        "enhanced_ms": 4.837424,
+        "enhanced_change_percent": 22.06617693073245
+      },
+      "enhanced_change_percent": 2.338125205549302,
+      "cached_change_percent": 2.6540250008478816,
+      "roofline_times_ms": {
+        "original": 74.20261309712001,
+        "enhanced": 75.93756309712,
+        "cache40": 76.171969
+      },
+      "compute_budget_ms": 72.06609682431998
+    },
+    {
+      "model": "qwen3-235b-a22b-fp8-kv-bf16.json",
+      "memory_only": {
+        "original_ms": 33.187887,
+        "enhanced_ms": 37.5671035,
+        "enhanced_change_percent": 13.195225414621902
+      },
+      "enhanced_change_percent": 2.163465700471412,
+      "cached_change_percent": 1.4147644828968131,
+      "roofline_times_ms": {
+        "original": 250.87418759712,
+        "enhanced": 256.30176459712,
+        "cache40": 254.4234665
+      },
+      "compute_budget_ms": 218.98468458495975
+    },
+    {
+      "model": "deepseek-v3-fp8-kv-bf16.json",
+      "memory_only": {
+        "original_ms": 84.9184295,
+        "enhanced_ms": 90.08029,
+        "enhanced_change_percent": 6.078610415186736
+      },
+      "enhanced_change_percent": 1.4616613663632538,
+      "cached_change_percent": 1.1188862666587474,
+      "roofline_times_ms": {
+        "original": 455.31445608079997,
+        "enhanced": 461.9696115808,
+        "cache40": 460.408907
+      },
+      "compute_budget_ms": 372.8859583283204
+    }
+  ],
+  "source_research_commit": "df0d5212f4fb23e0ca5f4e260db55152445e8f37",
+  "simulator_binary_sha256": "6c5a67081cbd4d6807541b2ce3747785b8256da42a9c164a13500de18c286ec9",
+  "baseline_configuration_sha256": "4eb66cb697bc4c41e44c114c72a060ff92d79735c220b79daed8f3f27644f98f",
+  "limits": [
+    "unmeasured100effectiveTFLOPS point",
+    "virtual1TiB capacity only",
+    "aggregate layer compute; activations precede compute; next-layer prefetch overlap",
+    "not GPU cache/inference/endurance calibration"
+  ]
+}

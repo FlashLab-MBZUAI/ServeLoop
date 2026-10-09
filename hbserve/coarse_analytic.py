@@ -119,6 +119,8 @@ def build_profile(model, request_digest, phase, tokens, context):
 
 
 class AnalyticCoverageCompiler(CoarseCoverageCompiler):
+    supports_roofline = True
+
     def __init__(self, **kwargs):
         models=kwargs['models']
         if len(models)!=1: raise HBServeError('analytic coverage currently supports one model')

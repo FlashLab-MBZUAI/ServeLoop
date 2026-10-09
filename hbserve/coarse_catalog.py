@@ -155,6 +155,8 @@ def build_profile(model, request_digest, phase, tokens, context):
 
 
 class CatalogCoverageCompiler(CoarseCoverageCompiler):
+    supports_roofline = True
+
     def __init__(self, **kwargs):
         models=kwargs['models']
         if len(models)!=1:raise HBServeError('model-derived coverage currently supports one model')

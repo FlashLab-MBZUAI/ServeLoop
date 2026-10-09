@@ -41,7 +41,7 @@ Omit all coverage options to keep the original compiler/default behavior.
 Uniform dense BF16/FP16 SwiGLU/RMSNorm models with explicit hidden/intermediate
 sizes, query/KV heads, head and rotary dimensions. B1 unchunked prefill from
 context zero, followed by single-token output-emitting decode forwards;
-`memory_only`. Analytic coverage rejects unsupported quantization, MoE,
+`memory_only` or layer-aggregate `roofline`. Analytic coverage rejects unsupported quantization, MoE,
 sliding-window attention, batching/chunking and mixed KV precision.
 A model structure does not identify framework fusion: fused attention, RoPE,
 residual normalization and last-token logits are declared assumptions.
@@ -110,4 +110,43 @@ without expert-capacity padding, token drops or network traffic. Matrix weight
 dtype alone does not identify a backend's activation/fusion implementation.
 These assumptions are recorded in the generated profile, not presented as
 hardware-qualified kernel traffic. Scope remains B1 full prefill/single-token
-decode, memory_only, one model; scheduler/batch and compute support are unchanged.
+decode, one model; scheduler/batch support is unchanged. Model-derived policies also support the layer-aggregate roofline described below.
+
+## Compute-aware model-derived simulation
+
+Both `dense-16bit-swiglu` (including its compatibility alias) and `model-derived`
+now accept `--timing roofline` as well as `memory_only`. For example:
+
+```sh
+python -m hbserve run --model models/llama31-8b-w8-kv-bf16.json \
+  --requests /path/to/requests.json --system /path/to/system.cfg \
+  --simulator /path/to/hbfsim --placement all-hbm --prefetch-depth 1 \
+  --coarse-coverage-policy model-derived \
+  --timing roofline --peak-tflops 200 --efficiency 0.5 --out /path/to/new-output
+```
+
+MoE uses the same original router input. Finite-cache options are unchanged.
+Captured input-bound profiles still require `memory_only`; `gpu_calibrated` and
+linear timing are not admitted by the enhanced providers in this stage.
+
+Compute durations come from the original model FLOP ledger divided by
+`peak_tflops * efficiency`; no memory service time is included in that formula.
+The original compute node IDs/durations are preserved. MoE attention/router and
+post-routing durations sum to one layer budget, not two; cache transformations
+preserve those durations. Next-layer weight/KV prefetch can overlap current
+compute through the original dependency graph. Covered activation accesses
+precede their aggregate layer compute; this is not operator-level compute/memory
+overlap. Final cache drain remains part of request completion.
+
+Access-generator assumptions describe footprints only. Separate `coarse_compute`
+audit and run input metadata describe the added timing model and explicitly mark
+it uncalibrated. External16-bit activation,quantized GEMM and MLA assumptions
+remain unchanged. Cache recency still follows the declared canonical range order,
+not a measured GPU issue timeline.
+
+Use explicit effective throughput appropriate to the modeled workload. The
+example200TFLOP/s and efficiency0.5 (100effectiveTFLOP/s) is a normalized sensitivity
+point,not a hardware measurement or an FP8/W8 performance guarantee. One fixed
+rate applies to both phases in a run; precision/shape-dependent throughput and
+real kernel overlap require separate qualification. `memory_only` remains the
+unchanged reference for isolating device traffic effects.

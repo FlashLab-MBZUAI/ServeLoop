@@ -70,14 +70,18 @@ class CoarseCoverageProfile:
 
 
 class CoarseCoverageCompiler(HBServeCompiler):
+    # Captured profiles retain their original memory-only qualification.
+    supports_roofline = False
+
     def __init__(self, *, coverage_profile, cache_bound='off', **kwargs):
         super().__init__(**kwargs)
         self.coverage = coverage_profile
         if cache_bound not in ('off','ideal-temporaries'):
             raise HBServeError('unsupported coarse cache sensitivity bound')
         self.cache_bound = cache_bound
-        if self.timing.timing_model != 'memory_only':
-            raise HBServeError('coarse coverage currently requires memory_only timing')
+        if self.timing.timing_model != 'memory_only' and not (
+                self.supports_roofline and self.timing.timing_model == 'roofline'):
+            raise HBServeError('captured coverage requires memory_only; model-derived coverage supports memory_only or roofline')
         if len(self.models) != 1 or next(iter(self.models.values())).digest != self.coverage.model_digest:
             raise HBServeError('model does not match the coarse coverage profile')
         if self.request_trace.digest != self.coverage.request_digest:
@@ -159,4 +163,11 @@ class CoarseCoverageCompiler(HBServeCompiler):
             coarse_cache_bound=self.cache_bound,
             cache_bound_scope='temporary coverage only; weight/KV traffic unchanged',
             coverage_evidence=coverage.document.get('evidence',{}))
+        if self.timing.timing_model == 'roofline':
+            audit[output[-1].id]['coarse_compute'] = dict(
+                model='original layer-aggregate FLOP roofline',
+                peak_tflops=self.timing.peak_tflops, efficiency=self.timing.efficiency,
+                compute_nodes='original durations preserved; MoE routing split counted once',
+                overlap='next-layer weight/KV prefetch; covered layer activations precede aggregate compute',
+                calibrated=False)
         return replace(base,operations=tuple(output),audit=audit)

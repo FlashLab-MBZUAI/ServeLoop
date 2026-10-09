@@ -722,10 +722,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 cache_bound=args.coarse_cache_bound or 'off',
                 traffic_domain='tensor/kernel coverage; not hardware or modeled GPU-cache misses')
         if args.coarse_coverage_policy is not None:
-            from hbserve.coarse_analytic import ASSUMPTIONS
+            if args.coarse_coverage_policy == 'model-derived':
+                from hbserve.coarse_catalog import ASSUMPTIONS
+            else:
+                from hbserve.coarse_analytic import ASSUMPTIONS
             input_artifacts['coarse_coverage'] = dict(policy=args.coarse_coverage_policy,
                 assumptions=ASSUMPTIONS,cache_bound=args.coarse_cache_bound or 'off',
                 traffic_domain='analytic tensor footprints; not GPU-cache misses or captured kernel coverage')
+            if timing.timing_model == 'roofline':
+                input_artifacts['coarse_coverage']['compute'] = dict(
+                    model='layer-aggregate roofline', peak_tflops=timing.peak_tflops,
+                    efficiency=timing.efficiency, calibrated=False,
+                    overlap='next-layer weight/KV prefetch; activations precede aggregate compute')
         if args.coarse_l2_capacity_bytes is not None:
             input_artifacts['coarse_l2']=dict(capacity_bytes=args.coarse_l2_capacity_bytes,
                 sector_bytes=32,model='fully_associative_sector_lru_range',

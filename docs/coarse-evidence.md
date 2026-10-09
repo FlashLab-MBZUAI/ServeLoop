@@ -74,3 +74,25 @@ Single samples, generation+cache only, not HBFSim/inference latency. MoE still r
 - Descriptor/model mismatch,missing geometry and unsupported shapes reject. Routing-stage coverage precedes routed weight availability; byte/dependency contracts pass.
 - Offline wheel build/install; all imports from installed site-packages. Nine native replay arms: actual Llama8B W8 atP16+D1, plus two small explicitly synthetic MoE/GQA andMoE/MLA fixtures, each original/enhanced/cache40. Three portable descriptor→nativeJSON conversions passed. These fixtures certify software wiring only.
 - Full public671B/235B native HBFSim replay,hardware/cache fidelity and non-memory-only timing were not qualified in this task. Device capacity/CPU budgets remain explicit constraints. Earlier baseline-wide test failures remain documented; no all-CI claim.
+
+## Compute-aware normalized roofline screen
+
+Full five-model P512+D1/allHBM software replay now passes with original,enhanced
+and enhanced40MiB modes. Capacity-only1TiB with fixed4stack timings; peak200TFLOP/s
+×efficiency0.5 gives100effectiveTFLOP/s in every phase/model. This is not measured
+GPU/precision calibration.
+
+| Model | Original ms | Enhanced ms | Change | Enhanced40MiB ms |
+|---|---:|---:|---:|---:|
+| llama31-8b-w8-kv-bf16.json | 73.326 | 74.729 | +1.91% | 74.621 |
+| llama31-70b-w8a16-kv-bf16.json | 714.215 | 721.674 | +1.04% | 724.709 |
+| qwen3-8b-bf16-kv-bf16.json | 74.203 | 75.938 | +2.34% | 76.172 |
+| qwen3-235b-a22b-fp8-kv-bf16.json | 250.874 | 256.302 | +2.16% | 254.423 |
+| deepseek-v3-fp8-kv-bf16.json | 455.314 | 461.970 | +1.46% | 460.409 |
+
+All modes preserve the same original FLOP/compute budget; MoE routing is counted
+once. Exact20old memory_only DAG hashes reproduce unchanged. Next-layer weight/KV
+prefetch overlaps aggregate compute; covered layer activations precede that compute.
+This does not qualify operator-level overlap, real latency or HBF/endurance ranking.
+Traffic is unchanged by enabling compute. Greater compute dominance shrinks relative
+memory-model differences at this specific rate; other rates/shapes can differ.
