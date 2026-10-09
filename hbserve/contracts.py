@@ -440,6 +440,7 @@ class ModelSpec:
     layers: tuple[LayerSpec, ...]
     lm_head_flops_per_token: int
     structure: DenseModelStructure | None = None
+    coverage_descriptor: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         _entity_identifier(self.model_id, "model id")
@@ -498,6 +499,9 @@ class ModelSpec:
                 raise HBServeError('structure disagrees with dense layer weight/KV payloads')
             if self.final_norm_bytes < 2*g.hidden_size or self.lm_head_bytes < self.embedding_bytes:
                 raise HBServeError('structure disagrees with norm/head payloads')
+        if self.coverage_descriptor is not None:
+            from hbserve.catalog import validate_coverage_descriptor
+            validate_coverage_descriptor(self, self.coverage_descriptor)
         # Force checked aggregate accounting during construction.
         _ = self.weight_footprint_bytes
 
@@ -664,6 +668,8 @@ class ModelSpec:
         }
         if self.structure is not None:
             document['structure']=self.structure.canonical()
+        if self.coverage_descriptor is not None:
+            document['coverage_descriptor']=dict(self.coverage_descriptor)
         return document
 
     @cached_property
@@ -687,7 +693,8 @@ class ModelSpec:
                 "layers",
                 "traffic_model",
                 "compute_model",
-            } | ({'structure'} if 'structure' in value else set()),
+            } | ({'structure'} if 'structure' in value else set())
+              | ({'coverage_descriptor'} if 'coverage_descriptor' in value else set()),
             "model descriptor",
         )
         if value.get("schema") != MODEL_SCHEMA:
@@ -797,6 +804,7 @@ class ModelSpec:
                 value.get("lm_head_flops_per_token"), "lm_head_flops_per_token"
             ),
             structure=DenseModelStructure.from_dict(value['structure']) if 'structure' in value else None,
+            coverage_descriptor=value.get('coverage_descriptor'),
         )
 
 
@@ -1737,6 +1745,8 @@ class CanonicalServingBatch:
                 "hardware_cache_filtering_validated": False,
                 "scope": "KV and supported small-M QKV input/packed weights/scales; other tensors retain explicit footprint estimates",
             }} if application_kernels else {}),
+            **({'coarse_l2': dict(self.audit[self.operations[-1].id]['coarse_l2'])}
+               if 'coarse_l2' in self.audit[self.operations[-1].id] else {}),
         }
 
     @cached_property

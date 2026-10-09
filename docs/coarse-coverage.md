@@ -12,15 +12,15 @@ individual GPU requests. Different models, input traces, batch shapes and
 contexts are rejected instead of silently extrapolated. This is a bounded
 reusable profile interface, not a general model/shape generator.
 
-From the HBF research workspace, use a fresh output directory:
+From the ServeLoop checkout, after `python -m pip install -e .`, use a fresh output directory:
 
 ```sh
-python tools/hbf.py hbserve run \
-  --model ServeLoop/examples/coarse-coverage/model.json \
-  --requests ServeLoop/examples/coarse-coverage/requests.json \
+python -m hbserve run \
+  --model examples/coarse-coverage/model.json \
+  --requests examples/coarse-coverage/requests.json \
   --system /path/to/system.cfg --simulator /path/to/hbfsim \
   --placement weights-hbf-kv-hbm --timing memory_only --prefetch-depth 1 \
-  --coarse-coverage-profile ServeLoop/examples/coarse-coverage/qwen2.5-1.5b-sglang-bf16-p16-d1.json \
+  --coarse-coverage-profile examples/coarse-coverage/qwen2.5-1.5b-sglang-bf16-p16-d1.json \
   --out /path/to/fresh-output
 ```
 
@@ -64,8 +64,8 @@ For the included two placements, the bound changes total simulated memory time
 by at most~3.25% and preserves their ranking. It does not justify ignoring cache
 for physical traffic claims: the detailed reference's modeled cache changes
 read/write volumes substantially. Do not apply a single fitted hit ratio to
-coverage bytes. Use the opt-in detailed reference when post-cache traffic is
-the object of study; GPU-cache accuracy is outside this coarse version's scope.
+coverage bytes. Use separately qualified detailed traces when needed; GPU-cache accuracy is
+outside this coarse approximation's scope.
 
 ## Rebuild a profile
 
@@ -93,8 +93,8 @@ Use `--coarse-coverage-policy dense-16bit-swiglu` instead of
 ledger and request shapes. The two options are mutually exclusive. Example:
 
 ```sh
-python tools/hbf.py hbserve run \
-  --model ServeLoop/examples/coarse-coverage/model.json \
+python -m hbserve run \
+  --model examples/coarse-coverage/model.json \
   --requests /path/to/requests.json --system /path/to/system.cfg \
   --simulator /path/to/hbfsim --placement weights-hbf-kv-hbm \
   --timing memory_only --prefetch-depth 1 \
@@ -116,7 +116,7 @@ Import a supported dense Llama/Qwen/Mistral Hugging Face config without loading
 weights or executing the model:
 
 ```sh
-python tools/hbf.py hbserve model /path/to/config.json --hf-config \
+python -m hbserve model /path/to/config.json --hf-config \
   --dtype bfloat16 --output /path/to/model.json
 ```
 
@@ -159,6 +159,109 @@ and assumptions; compiled workload audit includes generated profile evidence.
 P16 original and captured-profile scientific results remain unchanged. In the
 complete all-HBM example analytic/captured simulated totals are0.828522/0.831579ms;
 host execution0.183/0.479s (single samples). Traffic differs by about3–6%, not
-hardware error. Initial shape results: research workspace
-`experiments/coarse_analytic_shapes_20261008_02/RESULT.md`. Structure parameterization
-and7B/8B integration results: `experiments/coarse_structure_params_20261008_03/RESULT.md`.
+hardware error. A compact complete-model comparison is included in [coarse evidence](coarse-evidence.md).
+
+## Optional range L2 approximation
+
+Add `--coarse-l2-capacity-bytes 1048576` to an analytic-policy or captured-profile
+run to enable a cold1MiB cache. Omit the option to preserve the existing uncached
+path. Cache capacity must be a positive multiple of32B. The named model is a
+fully associative32B-sector LRU cache, write-back/write-allocate, shared across
+all application objects before HBM/HBF placement. Weights, KV and tensor ranges
+compete for the same capacity; controller metadata/NAND traffic is not cached
+by this frontend. Capacity is an assumption, not a particular GPU's geometry.
+
+Default `--coarse-l2-write-policy write-allocate-fetch` fetches a sector on every
+write miss. Optional `--coarse-l2-write-policy full-store-no-fetch` skips read
+fill when the operation overwrites the entire valid sector; partial stores
+still fetch initialized bytes. Both are explicit sensitivity policies, not
+claims about a particular NVIDIA kernel. Dirty evictions and final dirty drain
+are submitted to HBFSim. Dirty requests do not silently disappear.
+
+The current supported run contains one request, B1 output-emitting forwards,
+HBM-only KV with no migration, and memory_only coverage. It cannot combine with
+ideal-temporaries. Stateful compilation starts at batch0, with consecutive IDs.
+Weights/KV cache state persists across forwards. Packed temporary workspace is
+flushed and invalidated each forward, since input shapes/positions may rebind
+its offsets; this does not model arbitrary cross-forward temporary reuse.
+Dirty drain occurs at the last actual forward, before request completion/free.
+Prefill/decode traffic is reported separately, but temporary boundary writebacks
+are charged to the next forward; full-request drained totals are the cleaner
+comparison. Initial warm-cache or no-drain policies are not currently exposed.
+
+This implementation stores LRU intervals, not one Python object per sector.
+Ascending range access is exact to the declared fully associative sector model;
+interval fragmentation can still grow with access patterns. Bulk fills and
+writebacks preserve byte/sector accounting while approximating intra-range
+service ordering. Cache accesses use canonical insertion order, not a resolved
+GPU warp schedule. Original IDs become zero-duration completion joins; hit and
+dirty-owner dependencies preserve causality. Added fills/dependencies can
+increase simulated time, even when traffic declines. L2 hit/service latency,
+NVIDIA set conflicts, L1/shared-memory behavior and missing instruction repeats
+are unmodeled. It is a cache approximation, not hardware calibration.
+
+Run inputs record settings; `result.json` exposes `coarse_l2` with per-forward
+hit/miss/fill/writeback counters, resident/dirty sectors and interval peaks.
+Canonical batch summaries also contain per-phase cache accounting. Reported
+memory traffic is modeled post-L2, not measured hardware traffic. Existing
+coverage assumptions describe the pre-cache source; the separate L2 receipt
+identifies its transform.
+
+Qualification: an independent test-only scalar LRU oracle checks randomized
+range sequences under both write policies, transfer multisets, LRU order, dirty
+state and hit/miss counts. Historical captured-derived P16/decode ranges also
+matched a separate reference with fully associative32B configuration. This does
+not establish equivalence to the historical128B-line set-associative cache or
+to hardware. 1.5B P16 has both placements and1MiB/40MiB controls; P128/P512 and7B P16
+have allHBM1MiB controls. Captured-profile mode also works, but its P16 host cost
+is4.3× the uncached profile, so prefer the analytic provider for fast studies.
+See [coarse evidence](coarse-evidence.md) for included measurements and limitations.
+
+## Catalog-wide model-derived policy
+
+`--coarse-coverage-policy model-derived` covers all five packaged public descriptors:
+Llama3.1-8B W8, Llama3.1-70B W8A16, Qwen3-8B BF16, Qwen3-235B FP8 MoE/GQA,
+and DeepSeek-V3 FP8 MoE/MLA. The original weight, quantization-scale and KV
+ledgers remain unchanged. The analytic provider adds external16-bit tensor
+footprints, routed token dispatch/expert activation/combine and shared-expert
+accesses, plus low-rank query/KV and compressed-context MLA accesses.
+
+For a public descriptor use the same run command, replacing the policy value:
+
+```sh
+python -m hbserve run --model models/deepseek-v3-fp8-kv-bf16.json \
+  --requests /path/to/requests.json --router examples/ci-synthetic-router.json \
+  --system /path/to/system.cfg --simulator /path/to/hbfsim \
+  --placement weights-hbf-kv-hbm --timing memory_only --prefetch-depth 1 \
+  --coarse-coverage-policy model-derived --out /path/to/new-output
+```
+
+MoE still requires the original router trace/provider. Its selected-expert
+weight reads are preserved; this rule does not manufacture model routing.
+Use the same cache options as the dense provider when desired. Device capacity
+and runtime workspace must fit; supporting a descriptor does not mean it fits
+an arbitrary system configuration.
+
+To convert a public descriptor into portable native JSON with coverage geometry:
+
+```sh
+python -m hbserve model models/llama31-8b-w8-kv-bf16.json \
+  --coverage-descriptor --output /path/to/model.json
+```
+
+Without this flag, conversion/default run retains its old canonical data/digest.
+The optional embedded descriptor is checked against weight/KV/FLOP ledgers;
+older strict readers do not recognize the new optional field. Native ledgers
+without explicit dimensions cannot reconstruct quantized/MoE architecture.
+Existing supported HF-imported dense structures also work with model-derived;
+the established dense16 policy and its numerical results remain available.
+
+These are declared footprint assumptions: external activations are16-bit;
+quantized GEMMs consume weights/scales directly without an expanded weight
+workspace. Activation re-quantization scratch is omitted. MLA uses fused latent
+attention without external expanded-context K/V; MoE uses packed top-k copies
+without expert-capacity padding, token drops or network traffic. Matrix weight
+dtype alone does not identify a backend's activation/fusion implementation.
+These assumptions are recorded in the generated profile, not presented as
+hardware-qualified kernel traffic. Scope remains B1 full prefill/single-token
+decode, memory_only, one model; scheduler/batch and compute support are unchanged.

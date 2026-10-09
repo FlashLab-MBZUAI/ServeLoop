@@ -43,7 +43,10 @@ class CoarseCoverageProfile:
                     raise ValueError('invalid covered shape')
                 if type(p['current_token_kv_read']) is not bool:
                     raise ValueError('invalid current-token KV rule')
-                for call in p['embedding'] + sum(p['layers'],[]) + p['tail']:
+                routing_layers = p.get('routing_layers', [[] for _ in p['layers']])
+                if len(routing_layers) != document['layers']:
+                    raise ValueError('inconsistent routing-layer coverage')
+                for call in p['embedding'] + sum(p['layers'],[]) + sum(routing_layers,[]) + p['tail']:
                     if not isinstance(call['id'],str) or not isinstance(call['operator'],str):
                         raise ValueError('invalid call identity')
                     for stage in call['stages']:
@@ -142,6 +145,10 @@ class CoarseCoverageCompiler(HBServeCompiler):
             deps=operation.dependencies
             if operation.role=='embedding/complete':
                 deps=tuple(dict.fromkeys((*deps,*stages(phase['embedding'],deps))))
+            elif operation.role.startswith('layer/') and operation.role.endswith('/routing_ready'):
+                layer=int(operation.role.split('/')[1])
+                calls=phase.get('routing_layers',[[] for _ in model.layers])[layer]
+                deps=tuple(dict.fromkeys((*deps,*stages(calls,deps))))
             elif operation.role.startswith('layer/') and operation.role.endswith('/compute'):
                 layer=int(operation.role.split('/')[1])
                 deps=tuple(dict.fromkeys((*deps,*stages(phase['layers'][layer],deps))))
