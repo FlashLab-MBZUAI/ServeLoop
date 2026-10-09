@@ -371,19 +371,40 @@ def run_experiment(
     timing: TimingProvider,
     prefetch_depth: int,
     input_artifacts: Mapping[str, Any],
+    coarse_coverage_profile: Path | None = None,
+    coarse_cache_bound: str = 'off',
+    coarse_coverage_policy: str | None = None,
 ) -> dict[str, Any]:
     """Run the closed loop and return the receipted experiment document."""
 
+    if coarse_coverage_profile is not None and coarse_coverage_policy is not None:
+        raise HBServeError('choose a captured profile or an analytic policy')
+    if coarse_cache_bound != 'off' and coarse_coverage_profile is None and coarse_coverage_policy is None:
+        raise HBServeError('coarse cache sensitivity requires a coverage profile or policy')
     try:
         system = ResolvedSystemConfig.load(list(system_config_paths))
     except SimulationSessionError as error:
         raise HBServeError(str(error)) from error
-    compiler = HBServeCompiler(
+    compiler_type = HBServeCompiler
+    compiler_options = {}
+    if coarse_coverage_profile is not None:
+        from hbserve.coarse_coverage import CoarseCoverageCompiler, CoarseCoverageProfile
+        compiler_type = CoarseCoverageCompiler
+        compiler_options = dict(coverage_profile=CoarseCoverageProfile.load(coarse_coverage_profile),
+                                cache_bound=coarse_cache_bound)
+    if coarse_coverage_policy is not None:
+        from hbserve.coarse_analytic import AnalyticCoverageCompiler, POLICY_ALIASES
+        if coarse_coverage_policy not in POLICY_ALIASES:
+            raise HBServeError('unsupported analytic coverage policy')
+        compiler_type = AnalyticCoverageCompiler
+        compiler_options = dict(cache_bound=coarse_cache_bound)
+    compiler = compiler_type(
         models=models,
         request_trace=request_trace,
         router=router,
         timing=timing,
         prefetch_depth=prefetch_depth,
+        **compiler_options,
     )
     placement = HBServePlacement(
         models=models,
@@ -467,6 +488,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="overlay config applied after --system (repeatable)",
     )
     serving.add_argument("--router", type=Path, help="MoE router trace or synthetic router")
+    serving.add_argument('--coarse-coverage-profile',type=Path,
+        help='opt-in digest-bound operator coverage profile; memory_only, covered shapes only')
+    serving.add_argument('--coarse-coverage-policy',choices=('dense-16bit-swiglu','dense-bf16-swiglu'),
+        help='model-derived B1 tensor footprints with explicit fusion/attention assumptions')
+    serving.add_argument('--coarse-cache-bound',choices=('off','ideal-temporaries'),
+        help='temporary-traffic sensitivity bound with a coverage profile or policy; not a GPU cache simulator')
     serving.add_argument(
         "--placement",
         help="preset (" + ", ".join(sorted(PLACEMENT_PRESETS)) + ") or placement JSON; "
@@ -524,6 +551,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "router",
         "placement",
         "run_config",
+        "coarse_coverage_profile",
+        "coarse_coverage_policy",
+        "coarse_cache_bound",
         "prefix_cache_bytes",
         "prefix_cache_ttl_ns",
         *timing_defaults,
@@ -548,6 +578,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(
             "--topologies, --preflight-only, and --allow-dirty require --experiment"
         )
+    if args.coarse_coverage_profile is not None and args.coarse_coverage_policy is not None:
+        parser.error('choose --coarse-coverage-profile or --coarse-coverage-policy')
+    if args.coarse_cache_bound is not None and args.coarse_coverage_profile is None and args.coarse_coverage_policy is None:
+        parser.error('--coarse-cache-bound requires a coverage profile or policy')
     missing = [
         name for name in ("model", "system", "placement")
         if getattr(args, name) is None
@@ -648,6 +682,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         }
         output_directory = create_run_directory(args.out)
+        if args.coarse_coverage_profile is not None:
+            input_artifacts['coarse_coverage'] = dict(**_artifact(args.coarse_coverage_profile),
+                cache_bound=args.coarse_cache_bound or 'off',
+                traffic_domain='tensor/kernel coverage; not hardware or modeled GPU-cache misses')
+        if args.coarse_coverage_policy is not None:
+            from hbserve.coarse_analytic import ASSUMPTIONS
+            input_artifacts['coarse_coverage'] = dict(policy=args.coarse_coverage_policy,
+                assumptions=ASSUMPTIONS,cache_bound=args.coarse_cache_bound or 'off',
+                traffic_domain='analytic tensor footprints; not GPU-cache misses or captured kernel coverage')
         for model in models.values():
             write_json_atomic(
                 output_directory / f"model-{model.model_id}.json", model.canonical()
@@ -666,12 +709,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             timing=timing,
             prefetch_depth=prefetch_depth,
             input_artifacts=input_artifacts,
+            coarse_coverage_profile=args.coarse_coverage_profile,
+            coarse_coverage_policy=args.coarse_coverage_policy,
+            coarse_cache_bound=args.coarse_cache_bound or 'off',
         )
         result_path = output_directory / "result.json"
         write_json_atomic(result_path, experiment)
         lines = headline_lines(
             experiment, result_path=result_path, placement_label=placement_label
         )
+        if args.coarse_coverage_policy is not None:
+            lines.append('analytic coverage: assumed tensor footprints; attention scratch/cache/compute unmodeled')
+        if args.coarse_coverage_profile is not None:
+            lines.append('coarse coverage: tensor/kernel footprints; GPU cache misses are not modeled')
+        if args.coarse_cache_bound == 'ideal-temporaries':
+            lines.append('sensitivity bound: temporary traffic ideally on-chip; weight/KV traffic unchanged')
         (output_directory / "headline.txt").write_text(
             "\n".join(lines) + "\n", encoding="utf-8"
         )

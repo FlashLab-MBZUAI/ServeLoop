@@ -172,3 +172,9 @@ also include the relevant expert decisions; identical tokens alone are
 insufficient. Providers without this contract still cannot enable MoE prefix
 caching. Placement checks that each compiled batch uses the same router digest
 and records `prefix_router_sha256` in its receipt.
+# Optional operator coverage
+
+The coarse memory-only path can load `--coarse-coverage-profile FILE`; the
+original weight/KV path remains default. See [coverage scope and cache
+sensitivity](coarse-coverage.md) for the packaged input-bound1.5B example.
+This option does not select GPU compute calibration or claim post-cache traffic.
